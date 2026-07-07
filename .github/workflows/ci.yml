@@ -70,6 +70,9 @@ jobs:
           "$BIN" --help
           # --version must work
           "$BIN" --version
+          # the repo dogfoods its own governance — check must validate the
+          # committed harness.yaml (which self-governs via ./knowledge.yaml)
+          "$BIN" check --config "$PWD/harness.yaml"
           # init must create a harness.yaml template
           cd /tmp && "$BIN" init
           test -f harness.yaml

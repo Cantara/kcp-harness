@@ -1,0 +1,137 @@
+# kcp-harness eats its own dogfood — this manifest makes the compliance-proxy
+# repository navigable by any KCP agent, including the harness itself:
+#
+#   npx kcp-agent plan "how does the harness govern a tool call?" --manifest .
+#
+# test/manifest.test.ts keeps this file honest: it parses the manifest, checks
+# every unit path exists on disk, and runs a plan against it. harness.yaml
+# points its self-governance domain at this same manifest.
+
+kcp_version: "0.25"
+project: kcp-harness
+version: 0.3.0
+updated: "2026-07-07"
+language: en
+
+trust:
+  provenance:
+    publisher: "eXOReaction AS / Cantara"
+
+payment:
+  default_tier: free
+  methods:
+    - type: free
+
+units:
+  - id: front-door
+    path: README.md
+    intent: "What is kcp-harness, how do I install it, and how do I put it in front of an agent as an MCP compliance proxy?"
+    scope: global
+    audience: [agent, human]
+    triggers: [overview, getting started, install, usage, proxy, mcp]
+    hints: {load_strategy: eager}
+
+  - id: proxy
+    path: src/proxy.ts
+    intent: "The MCP proxy: how tool calls are intercepted, classified, governed, audited, and forwarded downstream, and how the kcp_* tools are served"
+    scope: project
+    audience: [agent, developer]
+    triggers: [proxy, mcp, intercept, tool call, kcp_plan, kcp_load, downstream]
+
+  - id: classifier
+    path: src/classifier.ts
+    intent: "How a tool call is classified as knowledge-navigation targeting a governed domain — path/URL extraction and prefix matching"
+    scope: project
+    audience: [agent, developer]
+    triggers: [classifier, classification, governed domain, path extraction, target]
+
+  - id: governor
+    path: src/governor.ts
+    intent: "The enforcement layer: plan-first and auto-plan governance modes, fail-closed blocking, budget spend, and signature enforcement via the kcp-agent planner"
+    scope: project
+    audience: [agent, developer]
+    triggers: [governor, governance, plan-first, auto-plan, fail-closed, enforce, block]
+
+  - id: config
+    path: src/config.ts
+    intent: "The harness.yaml schema — governed domains, governance policy (fail_closed, budget, signature_required, trusted_keys), downstream servers, and audit config"
+    scope: project
+    audience: [agent, developer]
+    triggers: [config, harness.yaml, policy, domains, signature_required, trusted_keys]
+
+  - id: session
+    path: src/session.ts
+    intent: "Per-session state — approved plans, path-approval lookups, budget spend accounting, and the temporal watcher registration"
+    scope: module
+    audience: [agent, developer]
+    triggers: [session, state, approved plan, spend]
+
+  - id: audit
+    path: src/audit.ts
+    intent: "The append-only JSONL audit log — event schema, event builders, and argument/decision sanitization for compliance-grade records"
+    scope: project
+    audience: [agent, developer]
+    triggers: [audit, log, jsonl, event, sanitize, compliance record]
+
+  - id: budget-ledger
+    path: src/budget-ledger.ts
+    intent: "Append-only budget spend tracking with ceiling enforcement — how spend is recorded and when a call is rejected for exceeding budget"
+    scope: module
+    audience: [agent, developer]
+    triggers: [budget, ledger, spend, ceiling, exceeded]
+
+  - id: temporal-watch
+    path: src/temporal-watch.ts
+    intent: "Temporal governance — detecting plan drift when a manifest changes after a plan was approved, and invalidating stale plans"
+    scope: module
+    audience: [agent, developer]
+    triggers: [temporal, drift, invalidate, watch, supersession]
+
+  - id: export
+    path: src/export.ts
+    intent: "Compliance evidence export — the deterministic mapping from audit events to SOC 2 Type II and ISO 27001 Annex A control IDs, and the evidence bundle layout"
+    scope: project
+    audience: [agent, developer, human]
+    triggers: [export, compliance, soc2, iso27001, evidence, controls]
+
+  - id: dashboard
+    path: src/dashboard/server.ts
+    intent: "The compliance dashboard HTTP server and SSE stream over the audit log — API endpoints and live event delivery"
+    scope: module
+    audience: [agent, developer]
+    triggers: [dashboard, sse, live, server, stream, monitoring]
+
+  - id: cli
+    path: src/cli.ts
+    intent: "The kcp-harness command-line interface — init, check, integrate, export, and dashboard subcommands"
+    scope: project
+    audience: [agent, human]
+    triggers: [cli, command, init, check, integrate, export, dashboard]
+
+  - id: integrations
+    path: src/integrations/generate.ts
+    intent: "How the harness generates MCP configuration for each supported agent (Claude Code, Cursor, Copilot, Windsurf, Cline, Continue, Crush, OpenClaw)"
+    scope: module
+    audience: [agent, developer]
+    triggers: [integrations, agents, mcp config, claude code, cursor, copilot]
+
+  - id: architecture
+    path: docs/guide/architecture.md
+    intent: "How the harness fits together end to end — the classify, govern, audit pipeline and where each component sits"
+    scope: project
+    audience: [agent, human]
+    triggers: [architecture, design, pipeline, overview, components]
+
+  - id: governance-model
+    path: docs/guide/governance.md
+    intent: "The governance model — deterministic planning, fail-closed posture, and how access decisions are made and traced"
+    scope: project
+    audience: [agent, human]
+    triggers: [governance, model, deterministic, fail-closed, decisions]
+
+  - id: compliance-export-guide
+    path: docs/guide/compliance-export.md
+    intent: "User guide for generating SOC 2 / ISO 27001 evidence bundles from the audit log, with interactive demos"
+    scope: module
+    audience: [agent, human]
+    triggers: [compliance, export, soc2, iso27001, evidence, demo]
