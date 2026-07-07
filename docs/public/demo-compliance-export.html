@@ -1,0 +1,999 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>KCP Harness — Compliance Export Demo</title>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #0d1117;
+  --bg-2: #161b22;
+  --bg-3: #1c2128;
+  --surface: #21262d;
+  --border: #30363d;
+  --text: #e6edf3;
+  --muted: #8b949e;
+  --accent: #e8b45c;
+  --green: #3fb950;
+  --red: #f85149;
+  --blue: #58a6ff;
+  --purple: #bc8cff;
+  --cyan: #79c0ff;
+  --line: #30363d;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'JetBrains Mono', monospace;
+  background: var(--bg);
+  color: var(--text);
+  height: 100vh;
+  overflow: hidden;
+}
+
+/* Progress bar */
+.progress { position: fixed; top: 0; left: 0; height: 3px; background: var(--accent); transition: width 0.5s ease; z-index: 100; }
+
+/* Shell chrome */
+.shell-bar {
+  display: flex; align-items: center; gap: 8px;
+  padding: 10px 16px;
+  background: var(--bg-2);
+  border-bottom: 1px solid var(--border);
+  user-select: none;
+}
+.dot { width: 12px; height: 12px; border-radius: 50%; }
+.dot.red { background: #ff5f56; }
+.dot.yellow { background: #ffbd2e; }
+.dot.green { background: #27c93f; }
+.shell-title { color: var(--muted); font-size: 12px; margin-left: 8px; }
+.shell-nav { margin-left: auto; display: flex; gap: 12px; align-items: center; }
+.shell-nav .step-counter { color: var(--muted); font-size: 12px; }
+
+/* Layout */
+.layout {
+  display: grid;
+  grid-template-columns: 240px 1fr 280px;
+  height: calc(100vh - 42px);
+}
+
+/* Timeline sidebar */
+.timeline {
+  background: var(--bg-2);
+  border-right: 1px solid var(--border);
+  padding: 20px 0;
+  overflow-y: auto;
+}
+.timeline-title {
+  padding: 0 20px 16px;
+  font-size: 11px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+.timeline-step {
+  padding: 10px 20px;
+  display: flex; align-items: flex-start; gap: 10px;
+  cursor: pointer;
+  transition: background 0.2s;
+  border-left: 2px solid transparent;
+}
+.timeline-step:hover { background: var(--bg-3); }
+.timeline-step.active {
+  background: var(--bg-3);
+  border-left-color: var(--accent);
+}
+.timeline-step.done .step-icon { color: var(--green); }
+.step-icon {
+  width: 20px; height: 20px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 12px; color: var(--muted);
+  flex-shrink: 0; margin-top: 2px;
+}
+.step-label { font-size: 12px; line-height: 1.4; }
+.step-label .step-name { color: var(--text); }
+.step-label .step-desc { color: var(--muted); font-size: 10px; display: block; margin-top: 2px; }
+
+/* Main content */
+.main {
+  padding: 24px 32px;
+  overflow-y: auto;
+  position: relative;
+}
+.step-content { display: none; animation: fadeIn 0.4s ease; }
+.step-content.active { display: block; }
+@keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+
+.step-content h2 {
+  font-size: 18px; font-weight: 700;
+  margin-bottom: 8px;
+  color: var(--accent);
+}
+.step-content .subtitle {
+  font-size: 12px; color: var(--muted);
+  margin-bottom: 24px;
+}
+
+/* Terminal block */
+.terminal {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  margin-bottom: 16px;
+}
+.terminal-bar {
+  display: flex; align-items: center; gap: 6px;
+  padding: 8px 12px;
+  background: var(--bg-2);
+  border-bottom: 1px solid var(--border);
+  font-size: 10px; color: var(--muted);
+}
+.terminal-bar .tdot { width: 8px; height: 8px; border-radius: 50%; }
+.terminal-bar .tdot.r { background: #ff5f56; }
+.terminal-bar .tdot.y { background: #ffbd2e; }
+.terminal-bar .tdot.g { background: #27c93f; }
+.terminal-body {
+  padding: 16px;
+  font-size: 12px;
+  line-height: 1.7;
+  max-height: 400px;
+  overflow-y: auto;
+}
+.terminal-body .line { white-space: pre; }
+.terminal-body .cmd { color: var(--green); }
+.terminal-body .dim { color: var(--muted); }
+.terminal-body .ok { color: var(--green); }
+.terminal-body .warn { color: var(--accent); }
+.terminal-body .err { color: var(--red); }
+.terminal-body .info { color: var(--blue); }
+.terminal-body .accent { color: var(--accent); }
+.terminal-body .purple { color: var(--purple); }
+.terminal-body .cyan { color: var(--cyan); }
+
+/* Animated lines */
+.terminal-body .line { opacity: 0; animation: lineIn 0.3s ease forwards; }
+.terminal-body .line:nth-child(1) { animation-delay: 0s; }
+.terminal-body .line:nth-child(2) { animation-delay: 0.15s; }
+.terminal-body .line:nth-child(3) { animation-delay: 0.3s; }
+.terminal-body .line:nth-child(4) { animation-delay: 0.45s; }
+.terminal-body .line:nth-child(5) { animation-delay: 0.6s; }
+.terminal-body .line:nth-child(6) { animation-delay: 0.75s; }
+.terminal-body .line:nth-child(7) { animation-delay: 0.9s; }
+.terminal-body .line:nth-child(8) { animation-delay: 1.05s; }
+.terminal-body .line:nth-child(9) { animation-delay: 1.2s; }
+.terminal-body .line:nth-child(10) { animation-delay: 1.35s; }
+.terminal-body .line:nth-child(11) { animation-delay: 1.5s; }
+.terminal-body .line:nth-child(12) { animation-delay: 1.65s; }
+.terminal-body .line:nth-child(13) { animation-delay: 1.8s; }
+.terminal-body .line:nth-child(14) { animation-delay: 1.95s; }
+.terminal-body .line:nth-child(15) { animation-delay: 2.1s; }
+.terminal-body .line:nth-child(16) { animation-delay: 2.25s; }
+.terminal-body .line:nth-child(17) { animation-delay: 2.4s; }
+.terminal-body .line:nth-child(18) { animation-delay: 2.55s; }
+.terminal-body .line:nth-child(19) { animation-delay: 2.7s; }
+.terminal-body .line:nth-child(20) { animation-delay: 2.85s; }
+@keyframes lineIn { from { opacity: 0; } to { opacity: 1; } }
+
+/* File tree */
+.file-tree {
+  font-size: 12px; line-height: 1.8;
+  padding: 16px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  margin-bottom: 16px;
+}
+.file-tree .dir { color: var(--blue); }
+.file-tree .file { color: var(--text); }
+.file-tree .size { color: var(--muted); }
+.file-tree .indent { display: inline-block; }
+.file-tree .indent-1 { padding-left: 20px; }
+.file-tree .indent-2 { padding-left: 40px; }
+
+/* Control cards */
+.control-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+.control-card {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px;
+  opacity: 0;
+  animation: cardIn 0.4s ease forwards;
+}
+.control-card:nth-child(1) { animation-delay: 0.1s; }
+.control-card:nth-child(2) { animation-delay: 0.2s; }
+.control-card:nth-child(3) { animation-delay: 0.3s; }
+.control-card:nth-child(4) { animation-delay: 0.4s; }
+.control-card:nth-child(5) { animation-delay: 0.5s; }
+@keyframes cardIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+
+.control-id {
+  font-size: 13px; font-weight: 700;
+  color: var(--accent);
+  margin-bottom: 4px;
+}
+.control-name {
+  font-size: 11px; color: var(--text);
+  margin-bottom: 8px;
+}
+.control-desc {
+  font-size: 10px; color: var(--muted);
+  line-height: 1.5;
+  margin-bottom: 10px;
+}
+.control-count {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 11px;
+}
+.count-badge {
+  background: rgba(59,185,80,0.15);
+  color: var(--green);
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-weight: 600;
+}
+.count-label { color: var(--muted); }
+
+/* Mapping flow */
+.mapping-flow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 16px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  margin-bottom: 16px;
+  font-size: 11px;
+}
+.flow-box {
+  padding: 8px 14px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  text-align: center;
+}
+.flow-box.source { border-color: var(--blue); color: var(--blue); }
+.flow-box.transform { border-color: var(--accent); color: var(--accent); }
+.flow-box.output { border-color: var(--green); color: var(--green); }
+.flow-arrow { color: var(--muted); font-size: 16px; }
+
+/* Evidence table */
+.evidence-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+  margin-bottom: 16px;
+}
+.evidence-table th {
+  text-align: left;
+  padding: 8px 12px;
+  color: var(--muted);
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  font-size: 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-2);
+}
+.evidence-table td {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+}
+.evidence-table tr:hover { background: var(--bg-3); }
+.badge-approved { background: rgba(59,185,80,0.15); color: var(--green); padding: 2px 6px; border-radius: 3px; font-size: 10px; }
+.badge-blocked { background: rgba(248,81,73,0.15); color: var(--red); padding: 2px 6px; border-radius: 3px; font-size: 10px; }
+.badge-governed { background: rgba(136,198,255,0.15); color: var(--cyan); padding: 2px 6px; border-radius: 3px; font-size: 10px; }
+
+/* Report preview */
+.report-preview {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 24px;
+  font-size: 12px;
+  line-height: 1.7;
+}
+.report-preview h3 { color: var(--accent); font-size: 16px; margin-bottom: 16px; }
+.report-preview h4 { color: var(--text); font-size: 13px; margin: 16px 0 8px; }
+.report-preview .report-table {
+  width: 100%; border-collapse: collapse;
+  margin: 12px 0; font-size: 11px;
+}
+.report-preview .report-table th {
+  text-align: left; padding: 6px 10px;
+  border-bottom: 2px solid var(--border);
+  color: var(--muted); font-size: 10px;
+  text-transform: uppercase; letter-spacing: 0.5px;
+}
+.report-preview .report-table td {
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+}
+.report-meta { color: var(--muted); font-size: 11px; }
+
+/* Right sidebar */
+.sidebar {
+  background: var(--bg-2);
+  border-left: 1px solid var(--border);
+  padding: 20px;
+  overflow-y: auto;
+}
+.sidebar-section {
+  margin-bottom: 24px;
+}
+.sidebar-title {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--muted);
+  margin-bottom: 12px;
+}
+.sidebar-item {
+  font-size: 11px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border);
+  line-height: 1.5;
+}
+.sidebar-item:last-child { border-bottom: none; }
+.sidebar-key { color: var(--muted); }
+.sidebar-val { color: var(--text); }
+.sidebar-val.green { color: var(--green); }
+.sidebar-val.red { color: var(--red); }
+.sidebar-val.blue { color: var(--blue); }
+.sidebar-val.accent { color: var(--accent); }
+
+/* Big metrics */
+.metrics-row {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+  margin-bottom: 20px;
+}
+.metric-card {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px;
+  text-align: center;
+  opacity: 0;
+  animation: cardIn 0.4s ease forwards;
+}
+.metric-card:nth-child(1) { animation-delay: 0.1s; }
+.metric-card:nth-child(2) { animation-delay: 0.2s; }
+.metric-card:nth-child(3) { animation-delay: 0.3s; }
+.metric-value {
+  font-size: 32px;
+  font-weight: 700;
+  line-height: 1;
+}
+.metric-label {
+  font-size: 10px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-top: 6px;
+}
+
+/* Navigation hint */
+.nav-hint {
+  position: fixed;
+  bottom: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 16px;
+  font-size: 11px;
+  color: var(--muted);
+  z-index: 50;
+  display: flex; gap: 16px; align-items: center;
+}
+.nav-hint kbd {
+  background: var(--bg-3);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 1px 6px;
+  font-size: 10px;
+  color: var(--text);
+}
+
+/* Blinking cursor */
+@keyframes blink { 50% { opacity: 0; } }
+.cursor { animation: blink 1s step-end infinite; color: var(--accent); }
+
+/* Responsive: collapse sidebar on small screens */
+@media (max-width: 900px) {
+  .layout { grid-template-columns: 1fr; }
+  .timeline, .sidebar { display: none; }
+}
+</style>
+</head>
+<body>
+
+<div class="progress" id="progress"></div>
+
+<div class="shell-bar">
+  <span class="dot red"></span>
+  <span class="dot yellow"></span>
+  <span class="dot green"></span>
+  <span class="shell-title">kcp-harness &mdash; compliance export demo</span>
+  <div class="shell-nav">
+    <span class="step-counter" id="step-counter">1 / 8</span>
+  </div>
+</div>
+
+<div class="layout">
+
+  <!-- Timeline sidebar -->
+  <div class="timeline">
+    <div class="timeline-title">Tutorial Steps</div>
+    <div class="timeline-step active" data-step="0" onclick="goTo(0)">
+      <div class="step-icon">1</div>
+      <div class="step-label">
+        <span class="step-name">The Problem</span>
+        <span class="step-desc">Why agents need compliance</span>
+      </div>
+    </div>
+    <div class="timeline-step" data-step="1" onclick="goTo(1)">
+      <div class="step-icon">2</div>
+      <div class="step-label">
+        <span class="step-name">Audit Log</span>
+        <span class="step-desc">Every decision recorded</span>
+      </div>
+    </div>
+    <div class="timeline-step" data-step="2" onclick="goTo(2)">
+      <div class="step-icon">3</div>
+      <div class="step-label">
+        <span class="step-name">Run Export</span>
+        <span class="step-desc">One command, full evidence</span>
+      </div>
+    </div>
+    <div class="timeline-step" data-step="3" onclick="goTo(3)">
+      <div class="step-icon">4</div>
+      <div class="step-label">
+        <span class="step-name">Evidence Bundle</span>
+        <span class="step-desc">Structured output</span>
+      </div>
+    </div>
+    <div class="timeline-step" data-step="4" onclick="goTo(4)">
+      <div class="step-icon">5</div>
+      <div class="step-label">
+        <span class="step-name">SOC 2 Mapping</span>
+        <span class="step-desc">Trust Services Criteria</span>
+      </div>
+    </div>
+    <div class="timeline-step" data-step="5" onclick="goTo(5)">
+      <div class="step-icon">6</div>
+      <div class="step-label">
+        <span class="step-name">ISO 27001 Mapping</span>
+        <span class="step-desc">Annex A controls</span>
+      </div>
+    </div>
+    <div class="timeline-step" data-step="6" onclick="goTo(6)">
+      <div class="step-icon">7</div>
+      <div class="step-label">
+        <span class="step-name">Summary Report</span>
+        <span class="step-desc">Auditor-ready markdown</span>
+      </div>
+    </div>
+    <div class="timeline-step" data-step="7" onclick="goTo(7)">
+      <div class="step-icon">8</div>
+      <div class="step-label">
+        <span class="step-name">The Big Picture</span>
+        <span class="step-desc">Deterministic compliance</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Main content area -->
+  <div class="main">
+
+    <!-- Step 0: The Problem -->
+    <div class="step-content active" id="step-0">
+      <h2>The Problem</h2>
+      <div class="subtitle">AI agents read knowledge. Auditors ask: can you prove what was read, why, and when?</div>
+
+      <div class="metrics-row">
+        <div class="metric-card">
+          <div class="metric-value" style="color:var(--red)">0%</div>
+          <div class="metric-label">Agents with audit trails</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-value" style="color:var(--accent)">100%</div>
+          <div class="metric-label">Auditors who ask</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-value" style="color:var(--green)">5 min</div>
+          <div class="metric-label">To generate evidence</div>
+        </div>
+      </div>
+
+      <div class="terminal">
+        <div class="terminal-bar"><span class="tdot r"></span><span class="tdot y"></span><span class="tdot g"></span> the auditor's questions</div>
+        <div class="terminal-body">
+          <div class="line accent">  "Which knowledge sources did the agent access?"</div>
+          <div class="line accent">  "Was access authorized before or after the fact?"</div>
+          <div class="line accent">  "Did the agent exceed its information budget?"</div>
+          <div class="line accent">  "Were there any temporal drifts in source material?"</div>
+          <div class="line accent">  "Can you map agent actions to SOC 2 / ISO 27001 controls?"</div>
+          <div class="line dim">  </div>
+          <div class="line cmd">  kcp-harness answers all of these. Automatically.</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Step 1: Audit Log -->
+    <div class="step-content" id="step-1">
+      <h2>The Audit Log</h2>
+      <div class="subtitle">Every tool call through the harness produces an append-only audit event</div>
+
+      <div class="terminal">
+        <div class="terminal-bar"><span class="tdot r"></span><span class="tdot y"></span><span class="tdot g"></span> .kcp-harness/audit.jsonl</div>
+        <div class="terminal-body">
+          <div class="line dim">// Agent starts a session &mdash; harness records it</div>
+          <div class="line info">{"type":"session_start","sessionId":"s-7a3f","timestamp":"2026-07-07T09:00:00Z"}</div>
+          <div class="line dim"> </div>
+          <div class="line dim">// Agent calls Read &mdash; target is in a governed domain</div>
+          <div class="line ok">{"type":"tool_call","outcome":"approved","sessionId":"s-7a3f","sequence":1,</div>
+          <div class="line ok"> "toolCall":{"name":"Read","args":{"path":"docs/architecture.md"}},</div>
+          <div class="line ok"> "classification":{"governed":true,"reason":"path matches docs/"},</div>
+          <div class="line ok"> "governance":{"mode":"auto","reason":"matched unit: architecture-overview"}}</div>
+          <div class="line dim"> </div>
+          <div class="line dim">// Agent tries to read outside approved plan &mdash; blocked</div>
+          <div class="line err">{"type":"tool_call","outcome":"blocked","sessionId":"s-7a3f","sequence":2,</div>
+          <div class="line err"> "toolCall":{"name":"Read","args":{"path":"docs/internal/secrets.md"}},</div>
+          <div class="line err"> "classification":{"governed":true,"reason":"path matches docs/"},</div>
+          <div class="line err"> "governance":{"mode":"auto","reason":"no matching unit in plan"}}</div>
+          <div class="line dim"> </div>
+          <div class="line dim">// Agent calls fetch &mdash; not in governed domain, passes through</div>
+          <div class="line cyan">{"type":"tool_call","outcome":"pass-through","sessionId":"s-7a3f","sequence":3,</div>
+          <div class="line cyan"> "toolCall":{"name":"Bash","args":{"command":"npm test"}},</div>
+          <div class="line cyan"> "classification":{"governed":false,"reason":"not a knowledge-nav tool"}}</div>
+          <div class="line dim"> </div>
+          <div class="line dim">// Budget spend recorded</div>
+          <div class="line warn">{"type":"budget_spend","sessionId":"s-7a3f","sequence":4,</div>
+          <div class="line warn"> "budget":{"totals":{"USDC":0.25},"ceiling":{"amount":1.00}}}</div>
+          <div class="line dim"> </div>
+          <div class="line info">{"type":"session_end","sessionId":"s-7a3f","timestamp":"2026-07-07T09:15:00Z"}</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Step 2: Run Export -->
+    <div class="step-content" id="step-2">
+      <h2>Run the Export</h2>
+      <div class="subtitle">One command generates a complete evidence bundle for your auditors</div>
+
+      <div class="terminal">
+        <div class="terminal-bar"><span class="tdot r"></span><span class="tdot y"></span><span class="tdot g"></span> terminal</div>
+        <div class="terminal-body">
+          <div class="line cmd">$ kcp-harness export \</div>
+          <div class="line cmd">    --format both \</div>
+          <div class="line cmd">    --org "Acme Corp" \</div>
+          <div class="line cmd">    --from 2026-07-01 \</div>
+          <div class="line cmd">    --to 2026-07-07 \</div>
+          <div class="line cmd">    --out evidence/</div>
+          <div class="line dim"> </div>
+          <div class="line info">[kcp-harness] exported 14 files to evidence/</div>
+          <div class="line info">[kcp-harness]   847 events, 23 sessions</div>
+          <div class="line dim"> </div>
+          <div class="line ok">  manifest.json</div>
+          <div class="line ok">  raw/sessions.json</div>
+          <div class="line ok">  raw/statistics.json</div>
+          <div class="line ok">  soc2/CC6.1-logical-access.json</div>
+          <div class="line ok">  soc2/CC6.3-authorized-access.json</div>
+          <div class="line ok">  soc2/CC6.6-system-boundaries.json</div>
+          <div class="line ok">  soc2/CC7.2-monitoring.json</div>
+          <div class="line ok">  soc2/CC8.1-change-management.json</div>
+          <div class="line ok">  soc2/summary.md</div>
+          <div class="line ok">  iso27001/A.8.3-access-restriction.json</div>
+          <div class="line ok">  iso27001/A.8.4-source-code-access.json</div>
+          <div class="line ok">  iso27001/A.8.15-logging.json</div>
+          <div class="line ok">  iso27001/A.8.16-monitoring.json</div>
+          <div class="line ok">  iso27001/A.5.23-cloud-services.json</div>
+        </div>
+      </div>
+
+      <div class="mapping-flow">
+        <div class="flow-box source">audit.jsonl<br><span style="font-size:10px;color:var(--muted)">847 events</span></div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-box transform">kcp-harness export<br><span style="font-size:10px;color:var(--muted)">classify &amp; map</span></div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-box output">evidence/<br><span style="font-size:10px;color:var(--muted)">14 files</span></div>
+      </div>
+    </div>
+
+    <!-- Step 3: Evidence Bundle -->
+    <div class="step-content" id="step-3">
+      <h2>Evidence Bundle</h2>
+      <div class="subtitle">Structured directory with raw data + framework-specific evidence</div>
+
+      <div class="file-tree">
+        <div><span class="dir">evidence/</span></div>
+        <div class="indent-1"><span class="file">manifest.json</span> <span class="size">&mdash; generator, date range, statistics</span></div>
+        <div class="indent-1"><span class="dir">raw/</span></div>
+        <div class="indent-2"><span class="file">sessions.json</span> <span class="size">&mdash; all sessions with event counts</span></div>
+        <div class="indent-2"><span class="file">statistics.json</span> <span class="size">&mdash; aggregate metrics</span></div>
+        <div class="indent-1"><span class="dir">soc2/</span> <span class="size">&mdash; Trust Services Criteria</span></div>
+        <div class="indent-2"><span class="file">CC6.1-logical-access.json</span></div>
+        <div class="indent-2"><span class="file">CC6.3-authorized-access.json</span></div>
+        <div class="indent-2"><span class="file">CC6.6-system-boundaries.json</span></div>
+        <div class="indent-2"><span class="file">CC7.2-monitoring.json</span></div>
+        <div class="indent-2"><span class="file">CC8.1-change-management.json</span></div>
+        <div class="indent-2"><span class="file">summary.md</span> <span class="size">&mdash; auditor-ready report</span></div>
+        <div class="indent-1"><span class="dir">iso27001/</span> <span class="size">&mdash; Annex A Controls</span></div>
+        <div class="indent-2"><span class="file">A.8.3-access-restriction.json</span></div>
+        <div class="indent-2"><span class="file">A.8.4-source-code-access.json</span></div>
+        <div class="indent-2"><span class="file">A.8.15-logging.json</span></div>
+        <div class="indent-2"><span class="file">A.8.16-monitoring.json</span></div>
+        <div class="indent-2"><span class="file">A.5.23-cloud-services.json</span></div>
+        <div class="indent-2"><span class="file">summary.md</span> <span class="size">&mdash; auditor-ready report</span></div>
+      </div>
+
+      <div class="terminal">
+        <div class="terminal-bar"><span class="tdot r"></span><span class="tdot y"></span><span class="tdot g"></span> manifest.json</div>
+        <div class="terminal-body">
+          <div class="line purple">{</div>
+          <div class="line info">  "generator": <span class="ok">"kcp-harness"</span>,</div>
+          <div class="line info">  "generatedAt": <span class="ok">"2026-07-07T12:00:00Z"</span>,</div>
+          <div class="line info">  "organization": <span class="ok">"Acme Corp"</span>,</div>
+          <div class="line info">  "format": <span class="ok">"both"</span>,</div>
+          <div class="line info">  "dateRange": { "from": <span class="ok">"2026-07-01"</span>, "to": <span class="ok">"2026-07-07"</span> },</div>
+          <div class="line info">  "statistics": {</div>
+          <div class="line">    "sessions": <span class="accent">23</span>,</div>
+          <div class="line">    "events": <span class="accent">847</span>,</div>
+          <div class="line">    "governed": <span class="ok">312</span>,</div>
+          <div class="line">    "blocked": <span class="err">7</span>,</div>
+          <div class="line">    "budgetExceeded": <span class="warn">2</span>,</div>
+          <div class="line">    "drifts": <span class="warn">1</span>,</div>
+          <div class="line">    "signatureBlocked": <span class="err">3</span></div>
+          <div class="line info">  }</div>
+          <div class="line purple">}</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Step 4: SOC 2 Controls -->
+    <div class="step-content" id="step-4">
+      <h2>SOC 2 Type II Controls</h2>
+      <div class="subtitle">Audit events map deterministically to Trust Services Criteria</div>
+
+      <div class="control-grid">
+        <div class="control-card">
+          <div class="control-id">CC6.1</div>
+          <div class="control-name">Logical Access Controls</div>
+          <div class="control-desc">Every governed tool call is logged with its classification and authorization decision</div>
+          <div class="control-count">
+            <span class="count-badge">312</span>
+            <span class="count-label">evidence items</span>
+          </div>
+        </div>
+        <div class="control-card">
+          <div class="control-id">CC6.3</div>
+          <div class="control-name">Authorized Access</div>
+          <div class="control-desc">Plan-first mode ensures access is pre-authorized before execution</div>
+          <div class="control-count">
+            <span class="count-badge">198</span>
+            <span class="count-label">evidence items</span>
+          </div>
+        </div>
+        <div class="control-card">
+          <div class="control-id">CC6.6</div>
+          <div class="control-name">System Boundaries</div>
+          <div class="control-desc">Every call classified as governed or pass-through &mdash; clear boundary enforcement</div>
+          <div class="control-count">
+            <span class="count-badge">847</span>
+            <span class="count-label">evidence items</span>
+          </div>
+        </div>
+        <div class="control-card">
+          <div class="control-id">CC7.2</div>
+          <div class="control-name">Monitoring Activities</div>
+          <div class="control-desc">All events logged: tool calls, budget spend, temporal drift, session lifecycle</div>
+          <div class="control-count">
+            <span class="count-badge">847</span>
+            <span class="count-label">evidence items</span>
+          </div>
+        </div>
+        <div class="control-card">
+          <div class="control-id">CC8.1</div>
+          <div class="control-name">Change Management</div>
+          <div class="control-desc">Temporal drifts and plan invalidations tracked as change events</div>
+          <div class="control-count">
+            <span class="count-badge">1</span>
+            <span class="count-label">evidence items</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="terminal">
+        <div class="terminal-bar"><span class="tdot r"></span><span class="tdot y"></span><span class="tdot g"></span> soc2/CC6.1-logical-access.json (excerpt)</div>
+        <div class="terminal-body">
+          <div class="line purple">{</div>
+          <div class="line info">  "controlId": <span class="ok">"CC6.1"</span>,</div>
+          <div class="line info">  "controlName": <span class="ok">"Logical and Physical Access Controls"</span>,</div>
+          <div class="line info">  "evidenceCount": <span class="accent">312</span>,</div>
+          <div class="line info">  "events": [</div>
+          <div class="line">    {</div>
+          <div class="line">      "timestamp": <span class="ok">"2026-07-07T09:00:12Z"</span>,</div>
+          <div class="line">      "sessionId": <span class="ok">"s-7a3f"</span>,</div>
+          <div class="line">      "type": <span class="ok">"tool_call"</span>,</div>
+          <div class="line">      "outcome": <span class="ok">"approved"</span>,</div>
+          <div class="line">      "detail": <span class="ok">"approved: matched unit architecture-overview"</span></div>
+          <div class="line">    },</div>
+          <div class="line dim">    ...</div>
+          <div class="line info">  ]</div>
+          <div class="line purple">}</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Step 5: ISO 27001 Controls -->
+    <div class="step-content" id="step-5">
+      <h2>ISO 27001 Annex A Controls</h2>
+      <div class="subtitle">The same audit events, mapped to ISO 27001:2022 control objectives</div>
+
+      <div class="control-grid">
+        <div class="control-card">
+          <div class="control-id">A.8.3</div>
+          <div class="control-name">Information Access Restriction</div>
+          <div class="control-desc">Governed tool calls with classification and authorization decision</div>
+          <div class="control-count">
+            <span class="count-badge">312</span>
+            <span class="count-label">evidence items</span>
+          </div>
+        </div>
+        <div class="control-card">
+          <div class="control-id">A.8.4</div>
+          <div class="control-name">Access to Source Code</div>
+          <div class="control-desc">Read, Glob, Grep calls in governed domains with access decisions</div>
+          <div class="control-count">
+            <span class="count-badge">156</span>
+            <span class="count-label">evidence items</span>
+          </div>
+        </div>
+        <div class="control-card">
+          <div class="control-id">A.8.15</div>
+          <div class="control-name">Logging</div>
+          <div class="control-desc">Session lifecycle events &mdash; start and end of every agent session</div>
+          <div class="control-count">
+            <span class="count-badge">46</span>
+            <span class="count-label">evidence items</span>
+          </div>
+        </div>
+        <div class="control-card">
+          <div class="control-id">A.8.16</div>
+          <div class="control-name">Monitoring Activities</div>
+          <div class="control-desc">Anomaly detection: temporal drifts, budget exceeded, blocked access</div>
+          <div class="control-count">
+            <span class="count-badge">10</span>
+            <span class="count-label">evidence items</span>
+          </div>
+        </div>
+        <div class="control-card">
+          <div class="control-id">A.5.23</div>
+          <div class="control-name">Cloud Services Security</div>
+          <div class="control-desc">Manifest signature verification for supply chain integrity</div>
+          <div class="control-count">
+            <span class="count-badge">89</span>
+            <span class="count-label">evidence items</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="mapping-flow">
+        <div class="flow-box source">Audit Event<br><span style="font-size:10px;color:var(--muted)">type + outcome</span></div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-box transform">Predicate Filter<br><span style="font-size:10px;color:var(--muted)">e.g. governed + Read</span></div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-box output">A.8.4 Evidence<br><span style="font-size:10px;color:var(--muted)">source code access</span></div>
+      </div>
+    </div>
+
+    <!-- Step 6: Summary Report -->
+    <div class="step-content" id="step-6">
+      <h2>Summary Report</h2>
+      <div class="subtitle">Auto-generated markdown report &mdash; ready for your compliance team</div>
+
+      <div class="report-preview">
+        <h3>SOC 2 Type II &mdash; Evidence Summary</h3>
+        <div class="report-meta">
+          <strong>Organization</strong>: Acme Corp<br>
+          <strong>Generated</strong>: 2026-07-07T12:00:00Z<br>
+          <strong>Period</strong>: 2026-07-01 &mdash; 2026-07-07
+        </div>
+
+        <h4>Overview</h4>
+        <table class="report-table">
+          <thead><tr><th>Metric</th><th>Value</th></tr></thead>
+          <tbody>
+            <tr><td>Sessions</td><td style="color:var(--blue)">23</td></tr>
+            <tr><td>Total events</td><td>847</td></tr>
+            <tr><td>Governed access attempts</td><td style="color:var(--green)">312</td></tr>
+            <tr><td>Blocked</td><td style="color:var(--red)">7</td></tr>
+            <tr><td>Budget exceeded</td><td style="color:var(--accent)">2</td></tr>
+            <tr><td>Temporal drifts</td><td style="color:var(--accent)">1</td></tr>
+            <tr><td>Signature-blocked</td><td style="color:var(--red)">3</td></tr>
+          </tbody>
+        </table>
+
+        <h4>Controls</h4>
+        <table class="report-table">
+          <thead><tr><th>Control</th><th>Name</th><th>Evidence</th></tr></thead>
+          <tbody>
+            <tr><td style="color:var(--accent)">CC6.1</td><td>Logical Access Controls</td><td>312</td></tr>
+            <tr><td style="color:var(--accent)">CC6.3</td><td>Authorized Access</td><td>198</td></tr>
+            <tr><td style="color:var(--accent)">CC6.6</td><td>System Boundaries</td><td>847</td></tr>
+            <tr><td style="color:var(--accent)">CC7.2</td><td>Monitoring Activities</td><td>847</td></tr>
+            <tr><td style="color:var(--accent)">CC8.1</td><td>Change Management</td><td>1</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Step 7: Big Picture -->
+    <div class="step-content" id="step-7">
+      <h2>The Big Picture</h2>
+      <div class="subtitle">Deterministic compliance &mdash; from agent action to auditor evidence</div>
+
+      <div class="metrics-row">
+        <div class="metric-card">
+          <div class="metric-value" style="color:var(--green)">13</div>
+          <div class="metric-label">Gate cascade</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-value" style="color:var(--blue)">2</div>
+          <div class="metric-label">Frameworks</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-value" style="color:var(--accent)">10</div>
+          <div class="metric-label">Control mappings</div>
+        </div>
+      </div>
+
+      <div class="terminal">
+        <div class="terminal-bar"><span class="tdot r"></span><span class="tdot y"></span><span class="tdot g"></span> the compliance stack</div>
+        <div class="terminal-body">
+          <div class="line accent">  ┌─────────────────────────────────────────────┐</div>
+          <div class="line accent">  │         Agent (any MCP-capable agent)       │</div>
+          <div class="line accent">  └────────────────────┬────────────────────────┘</div>
+          <div class="line dim">                       │ tool call</div>
+          <div class="line warn">  ┌────────────────────▼────────────────────────┐</div>
+          <div class="line warn">  │           kcp-harness (MCP proxy)           │</div>
+          <div class="line warn">  │                                             │</div>
+          <div class="line warn">  │  classify ─▸ govern ─▸ audit ─▸ respond    │</div>
+          <div class="line warn">  │                                             │</div>
+          <div class="line warn">  │  Side outputs:                              │</div>
+          <div class="line warn">  │    ├─ audit.jsonl      (append-only)        │</div>
+          <div class="line warn">  │    ├─ budget ledger    (spend tracking)     │</div>
+          <div class="line warn">  │    └─ temporal watch   (drift detection)    │</div>
+          <div class="line warn">  └────────────────────┬────────────────────────┘</div>
+          <div class="line dim">                       │ kcp-harness export</div>
+          <div class="line ok">  ┌────────────────────▼────────────────────────┐</div>
+          <div class="line ok">  │          Compliance Evidence Bundle          │</div>
+          <div class="line ok">  │                                             │</div>
+          <div class="line ok">  │    SOC 2          │     ISO 27001           │</div>
+          <div class="line ok">  │    CC6.1  CC6.3   │     A.8.3   A.8.4      │</div>
+          <div class="line ok">  │    CC6.6  CC7.2   │     A.8.15  A.8.16     │</div>
+          <div class="line ok">  │    CC8.1          │     A.5.23             │</div>
+          <div class="line ok">  └─────────────────────────────────────────────┘</div>
+        </div>
+      </div>
+
+      <div style="text-align:center;margin-top:24px;font-size:13px;color:var(--muted)">
+        The agent can't bypass governance. The audit log is append-only.<br>
+        The evidence is deterministic. The auditor gets proof, not promises.
+      </div>
+    </div>
+
+  </div>
+
+  <!-- Right sidebar -->
+  <div class="sidebar">
+    <div class="sidebar-section">
+      <div class="sidebar-title">Session Info</div>
+      <div class="sidebar-item"><span class="sidebar-key">Tool</span><br><span class="sidebar-val accent">kcp-harness</span></div>
+      <div class="sidebar-item"><span class="sidebar-key">Version</span><br><span class="sidebar-val">0.4.0</span></div>
+      <div class="sidebar-item"><span class="sidebar-key">Command</span><br><span class="sidebar-val blue">export</span></div>
+    </div>
+
+    <div class="sidebar-section">
+      <div class="sidebar-title">Frameworks</div>
+      <div class="sidebar-item"><span class="sidebar-val accent">SOC 2 Type II</span><br><span class="sidebar-key">5 Trust Services Criteria</span></div>
+      <div class="sidebar-item"><span class="sidebar-val accent">ISO 27001:2022</span><br><span class="sidebar-key">5 Annex A controls</span></div>
+    </div>
+
+    <div class="sidebar-section">
+      <div class="sidebar-title">SOC 2 Controls</div>
+      <div class="sidebar-item"><span class="sidebar-val">CC6.1</span> <span class="sidebar-key">Logical access</span></div>
+      <div class="sidebar-item"><span class="sidebar-val">CC6.3</span> <span class="sidebar-key">Authorized access</span></div>
+      <div class="sidebar-item"><span class="sidebar-val">CC6.6</span> <span class="sidebar-key">System boundaries</span></div>
+      <div class="sidebar-item"><span class="sidebar-val">CC7.2</span> <span class="sidebar-key">Monitoring</span></div>
+      <div class="sidebar-item"><span class="sidebar-val">CC8.1</span> <span class="sidebar-key">Change mgmt</span></div>
+    </div>
+
+    <div class="sidebar-section">
+      <div class="sidebar-title">ISO 27001 Controls</div>
+      <div class="sidebar-item"><span class="sidebar-val">A.8.3</span> <span class="sidebar-key">Access restriction</span></div>
+      <div class="sidebar-item"><span class="sidebar-val">A.8.4</span> <span class="sidebar-key">Source code</span></div>
+      <div class="sidebar-item"><span class="sidebar-val">A.8.15</span> <span class="sidebar-key">Logging</span></div>
+      <div class="sidebar-item"><span class="sidebar-val">A.8.16</span> <span class="sidebar-key">Monitoring</span></div>
+      <div class="sidebar-item"><span class="sidebar-val">A.5.23</span> <span class="sidebar-key">Cloud services</span></div>
+    </div>
+
+    <div class="sidebar-section">
+      <div class="sidebar-title">Key Principle</div>
+      <div class="sidebar-item" style="border:none;line-height:1.6">
+        <span class="sidebar-key">The mapping is deterministic: audit events map to specific control IDs based on their type and outcome. No manual tagging required.</span>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<div class="nav-hint">
+  <span><kbd>&larr;</kbd> <kbd>&rarr;</kbd> navigate</span>
+  <span>or click timeline</span>
+</div>
+
+<script>
+const TOTAL_STEPS = 8;
+let current = 0;
+
+function goTo(step) {
+  if (step < 0 || step >= TOTAL_STEPS) return;
+
+  // Update timeline
+  document.querySelectorAll('.timeline-step').forEach((el, i) => {
+    el.classList.remove('active');
+    if (i < step) { el.classList.add('done'); el.querySelector('.step-icon').textContent = '\u2713'; }
+    else { el.classList.remove('done'); el.querySelector('.step-icon').textContent = String(i + 1); }
+    if (i === step) el.classList.add('active');
+  });
+
+  // Update content
+  document.querySelectorAll('.step-content').forEach((el, i) => {
+    el.classList.remove('active');
+    if (i === step) el.classList.add('active');
+  });
+
+  // Update progress
+  document.getElementById('progress').style.width = ((step + 1) / TOTAL_STEPS * 100) + '%';
+
+  // Update counter
+  document.getElementById('step-counter').textContent = (step + 1) + ' / ' + TOTAL_STEPS;
+
+  current = step;
+}
+
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'ArrowRight' || e.key === ' ') { e.preventDefault(); goTo(current + 1); }
+  if (e.key === 'ArrowLeft') { e.preventDefault(); goTo(current - 1); }
+  if (e.key === 'Home') { e.preventDefault(); goTo(0); }
+  if (e.key === 'End') { e.preventDefault(); goTo(TOTAL_STEPS - 1); }
+});
+
+// Touch support
+let touchStartX = 0;
+document.addEventListener('touchstart', (e) => { touchStartX = e.touches[0].clientX; });
+document.addEventListener('touchend', (e) => {
+  const diff = e.changedTouches[0].clientX - touchStartX;
+  if (Math.abs(diff) > 50) {
+    if (diff < 0) goTo(current + 1);
+    else goTo(current - 1);
+  }
+});
+
+// Initialize
+goTo(0);
+</script>
+
+</body>
+</html>

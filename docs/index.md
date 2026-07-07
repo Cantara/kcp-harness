@@ -24,6 +24,6 @@ features:
     details: Every decision produces a compliance artifact — decision traces, budget ledger entries, temporal drift reports.
   - title: Budget-Controlled
     details: Append-only spend tracking with ceiling enforcement. Agents can't exceed their knowledge budget.
-  - title: Native Binaries
-    details: Cross-platform native executables via Deno compile. No Node.js runtime required on target machines.
+  - title: Compliance Export
+    details: One command generates SOC 2 Type II and ISO 27001 evidence bundles with deterministic control mappings. See the interactive demo.
 ---

@@ -53,6 +53,12 @@ export default defineConfig({
             { text: "Governance Model", link: "/guide/governance" },
           ],
         },
+        {
+          text: "Enterprise",
+          items: [
+            { text: "Compliance Export", link: "/guide/compliance-export" },
+          ],
+        },
       ],
       "/agents/": [
         {
