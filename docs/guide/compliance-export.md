@@ -2,7 +2,10 @@
 
 KCP Harness can generate compliance evidence bundles from its audit log, mapped to SOC 2 Type II and ISO 27001:2022 controls.
 
-<a href="/kcp-harness/demo-compliance-export.html" target="_blank" style="display:inline-block;padding:8px 20px;background:#e8b45c;color:#0d1117;border-radius:6px;text-decoration:none;font-weight:600;margin:12px 0">Interactive Demo →</a>
+<div style="display:flex;gap:12px;flex-wrap:wrap;margin:12px 0">
+<a href="/kcp-harness/demo-compliance-export.html" target="_blank" style="display:inline-block;padding:8px 20px;background:#e8b45c;color:#0d1117;border-radius:6px;text-decoration:none;font-weight:600">Interactive Demo →</a>
+<a href="/kcp-harness/demo-live-dashboard.html" target="_blank" style="display:inline-block;padding:8px 20px;background:transparent;border:1px solid #e8b45c;color:#e8b45c;border-radius:6px;text-decoration:none;font-weight:600">Live Dashboard Demo →</a>
+</div>
 
 ## Quick Start
 
