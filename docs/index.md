@@ -25,5 +25,7 @@ features:
   - title: Budget-Controlled
     details: Append-only spend tracking with ceiling enforcement. Agents can't exceed their knowledge budget.
   - title: Compliance Export
-    details: One command generates SOC 2 Type II and ISO 27001 evidence bundles with deterministic control mappings. See the interactive demo.
+    details: One command generates SOC 2 Type II and ISO 27001 evidence bundles with deterministic control mappings.
+    link: /guide/compliance-export
+    linkText: See the interactive demo
 ---
