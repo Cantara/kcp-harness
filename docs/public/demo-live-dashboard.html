@@ -1,0 +1,574 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>KCP Harness — Live Compliance Dashboard Demo</title>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #0d1117;
+  --bg-2: #161b22;
+  --bg-3: #1c2128;
+  --surface: #21262d;
+  --border: #30363d;
+  --text: #e6edf3;
+  --muted: #8b949e;
+  --accent: #e8b45c;
+  --green: #3fb950;
+  --red: #f85149;
+  --yellow: #d29922;
+  --blue: #58a6ff;
+  --purple: #bc8cff;
+  --cyan: #79c0ff;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html { scrollbar-color: var(--border) var(--bg); }
+body {
+  font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+.wrap { max-width: 1240px; margin: 0 auto; padding: 20px 20px 48px; }
+
+/* Header */
+header {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  padding-bottom: 16px; margin-bottom: 20px;
+  border-bottom: 1px solid var(--border);
+}
+header .logo { display: flex; align-items: center; gap: 10px; }
+header h1 { font-size: 17px; font-weight: 700; letter-spacing: -0.2px; }
+.badge {
+  font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.6px;
+  padding: 3px 9px; border-radius: 20px; white-space: nowrap;
+}
+.badge.brand { background: rgba(232,180,92,0.15); color: var(--accent); border: 1px solid rgba(232,180,92,0.3); }
+.badge.sim { background: rgba(188,140,255,0.13); color: var(--purple); border: 1px solid rgba(188,140,255,0.3); }
+.live { margin-left: auto; display: flex; align-items: center; gap: 7px; font-size: 12px; color: var(--muted); }
+.live-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green); box-shadow: 0 0 0 0 rgba(63,185,80,0.6); animation: pulse 2s infinite; }
+.live.paused .live-dot { background: var(--muted); animation: none; box-shadow: none; }
+@keyframes pulse { 0% { box-shadow: 0 0 0 0 rgba(63,185,80,0.5); } 70% { box-shadow: 0 0 0 7px rgba(63,185,80,0); } 100% { box-shadow: 0 0 0 0 rgba(63,185,80,0); } }
+
+/* Control deck */
+.deck {
+  background: var(--bg-2); border: 1px solid var(--border); border-radius: 10px;
+  padding: 14px 16px; margin-bottom: 18px;
+  display: grid; grid-template-columns: auto 1fr auto; gap: 18px; align-items: center;
+}
+@media (max-width: 860px) { .deck { grid-template-columns: 1fr; gap: 14px; } }
+.controls { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+button {
+  font-family: inherit; font-size: 12px; font-weight: 600;
+  color: var(--text); background: var(--surface); border: 1px solid var(--border);
+  padding: 7px 13px; border-radius: 7px; cursor: pointer; transition: all .15s;
+  display: inline-flex; align-items: center; gap: 6px; white-space: nowrap;
+}
+button:hover { background: var(--bg-3); border-color: #444c56; }
+button:active { transform: translateY(1px); }
+button.primary { background: var(--accent); color: #0d1117; border-color: var(--accent); }
+button.primary:hover { background: #f0c574; }
+button.ghost { background: transparent; }
+button.scenario { border-style: dashed; }
+button.scenario.hot { border-color: var(--red); color: var(--red); }
+.ctl-group { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 11px; }
+.ctl-group label { text-transform: uppercase; letter-spacing: 0.5px; }
+input[type=range] { -webkit-appearance: none; appearance: none; height: 4px; background: var(--border); border-radius: 3px; width: 92px; cursor: pointer; }
+input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 13px; height: 13px; border-radius: 50%; background: var(--accent); cursor: pointer; }
+input[type=range]::-moz-range-thumb { width: 13px; height: 13px; border: none; border-radius: 50%; background: var(--accent); cursor: pointer; }
+.stepper { display: flex; align-items: center; gap: 6px; }
+.stepper button { padding: 2px 9px; font-size: 14px; line-height: 1; }
+.stepper .n { min-width: 16px; text-align: center; color: var(--text); font-weight: 600; }
+
+/* Throughput sparkline */
+.throughput { display: flex; flex-direction: column; gap: 4px; min-width: 190px; }
+.throughput .tp-head { display: flex; justify-content: space-between; font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; }
+.throughput .tp-val { color: var(--accent); font-weight: 700; font-size: 12px; }
+.spark { width: 100%; height: 40px; display: block; }
+
+/* Stat tiles */
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(132px, 1fr)); gap: 10px; margin-bottom: 18px; }
+.stat { background: var(--bg-2); border: 1px solid var(--border); border-radius: 9px; padding: 13px 15px; position: relative; overflow: hidden; }
+.stat .label { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.6px; }
+.stat .value { font-size: 26px; font-weight: 700; margin-top: 3px; font-variant-numeric: tabular-nums; transition: color .2s; }
+.stat .value.g { color: var(--green); } .stat .value.r { color: var(--red); }
+.stat .value.y { color: var(--yellow); } .stat .value.b { color: var(--blue); }
+.stat.flash::after { content: ''; position: absolute; inset: 0; background: currentColor; opacity: 0; animation: flash .5s ease; pointer-events: none; }
+@keyframes flash { 0% { opacity: 0.10; } 100% { opacity: 0; } }
+
+/* Layout */
+.grid { display: grid; grid-template-columns: 300px 1fr; gap: 16px; align-items: start; }
+@media (max-width: 900px) { .grid { grid-template-columns: 1fr; } }
+.panel { background: var(--bg-2); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+.panel-head { padding: 11px 15px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.panel-head h2 { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.6px; color: var(--text); }
+.panel-head .count { font-size: 11px; color: var(--muted); }
+
+/* Sessions */
+.sessions { list-style: none; max-height: 560px; overflow-y: auto; }
+.sessions li { padding: 11px 15px; border-top: 1px solid var(--border); display: flex; flex-direction: column; gap: 5px; }
+.sessions li:first-child { border-top: none; }
+.sess-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.sess-id { font-weight: 600; color: var(--cyan); }
+.sess-agent { font-size: 10px; color: var(--muted); background: var(--surface); padding: 1px 7px; border-radius: 10px; border: 1px solid var(--border); }
+.sess-meta { font-size: 10.5px; color: var(--muted); display: flex; gap: 10px; }
+.sess-meta b { color: var(--text); font-weight: 600; }
+.sess-meta .blk { color: var(--red); }
+.budget-bar { height: 4px; background: var(--surface); border-radius: 3px; overflow: hidden; margin-top: 2px; }
+.budget-fill { height: 100%; background: var(--green); border-radius: 3px; transition: width .3s, background .3s; }
+
+/* Event log */
+.log-wrap { max-height: 560px; overflow-y: auto; }
+table { width: 100%; border-collapse: collapse; }
+thead th {
+  position: sticky; top: 0; z-index: 1; background: var(--bg-2);
+  text-align: left; padding: 8px 14px; font-size: 10px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.6px; color: var(--muted);
+  border-bottom: 1px solid var(--border);
+}
+tbody td { padding: 7px 14px; border-top: 1px solid var(--border); font-size: 12px; vertical-align: top; }
+tbody tr { animation: rowIn .35s ease; }
+@keyframes rowIn { from { opacity: 0; background: rgba(232,180,92,0.07); } to { opacity: 1; background: transparent; } }
+.t-time { color: var(--muted); font-size: 11px; white-space: nowrap; }
+.t-sess { color: var(--cyan); font-size: 11px; white-space: nowrap; }
+.t-type { color: var(--muted); font-size: 11px; }
+.t-tool { color: var(--text); white-space: nowrap; }
+.t-reason { color: var(--muted); font-size: 11px; max-width: 420px; }
+.outcome { display: inline-block; padding: 2px 8px; border-radius: 5px; font-size: 10.5px; font-weight: 600; white-space: nowrap; }
+.o-approved { background: rgba(63,185,80,0.15); color: var(--green); }
+.o-blocked { background: rgba(248,81,73,0.15); color: var(--red); }
+.o-pass-through { background: rgba(88,166,255,0.14); color: var(--blue); }
+.o-error { background: rgba(210,153,34,0.16); color: var(--yellow); }
+.filters { display: flex; gap: 7px; align-items: center; }
+.filters select { font-family: inherit; background: var(--bg); border: 1px solid var(--border); color: var(--text); padding: 4px 8px; border-radius: 6px; font-size: 11px; cursor: pointer; }
+.empty { padding: 30px 15px; text-align: center; color: var(--muted); font-size: 12px; }
+
+footer { text-align: center; color: var(--muted); font-size: 11px; margin-top: 26px; line-height: 1.7; }
+footer a { color: var(--accent); text-decoration: none; }
+footer a:hover { text-decoration: underline; }
+.hl { color: var(--accent); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="logo">
+      <h1>KCP Harness</h1>
+      <span class="badge brand">Compliance Dashboard</span>
+      <span class="badge sim">Simulated</span>
+    </div>
+    <div class="live" id="live"><span class="live-dot"></span> <span id="live-label">Live</span></div>
+  </header>
+
+  <!-- Control deck -->
+  <div class="deck">
+    <div class="controls">
+      <button class="primary" id="btn-play">⏸ Pause</button>
+      <div class="ctl-group">
+        <label>Speed</label>
+        <input type="range" id="speed" min="1" max="8" value="3">
+        <span class="n" id="speed-label" style="color:var(--text);min-width:26px">1.5×</span>
+      </div>
+      <div class="ctl-group">
+        <label>Agents</label>
+        <div class="stepper">
+          <button id="agents-dn">−</button>
+          <span class="n" id="agents-n">4</span>
+          <button id="agents-up">+</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="controls" style="justify-content:center">
+      <button class="scenario" id="sc-drift">⚡ Inject drift</button>
+      <button class="scenario" id="sc-budget">💸 Budget storm</button>
+      <button class="scenario hot" id="sc-attack">🛑 Unsigned-manifest attack</button>
+      <button class="ghost" id="sc-reset">↺ Reset</button>
+    </div>
+
+    <div class="throughput">
+      <div class="tp-head"><span>Throughput</span><span class="tp-val"><span id="tp-now">0</span> ev/s</span></div>
+      <svg class="spark" id="spark" viewBox="0 0 190 40" preserveAspectRatio="none" aria-hidden="true"></svg>
+    </div>
+  </div>
+
+  <!-- Stat tiles -->
+  <div class="stats" id="stats">
+    <div class="stat"><div class="label">Sessions</div><div class="value b" id="s-sessions">0</div></div>
+    <div class="stat"><div class="label">Events</div><div class="value" id="s-events">0</div></div>
+    <div class="stat"><div class="label">Governed</div><div class="value g" id="s-governed">0</div></div>
+    <div class="stat"><div class="label">Blocked</div><div class="value r" id="s-blocked">0</div></div>
+    <div class="stat"><div class="label">Budget Exceeded</div><div class="value y" id="s-budget">0</div></div>
+    <div class="stat"><div class="label">Drifts</div><div class="value y" id="s-drifts">0</div></div>
+    <div class="stat"><div class="label">Sig. Blocked</div><div class="value r" id="s-sig">0</div></div>
+  </div>
+
+  <!-- Sessions + Event log -->
+  <div class="grid">
+    <div class="panel">
+      <div class="panel-head"><h2>Active Sessions</h2><span class="count" id="sess-count">0</span></div>
+      <ul class="sessions" id="sessions"></ul>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head">
+        <h2>Event Log</h2>
+        <div class="filters">
+          <select id="f-type">
+            <option value="">All types</option>
+            <option value="tool_call">tool_call</option>
+            <option value="session_start">session_start</option>
+            <option value="session_end">session_end</option>
+            <option value="budget_spend">budget_spend</option>
+            <option value="budget_exceeded">budget_exceeded</option>
+            <option value="temporal_drift">temporal_drift</option>
+            <option value="plan_invalidated">plan_invalidated</option>
+          </select>
+          <select id="f-outcome">
+            <option value="">All outcomes</option>
+            <option value="approved">approved</option>
+            <option value="blocked">blocked</option>
+            <option value="pass-through">pass-through</option>
+            <option value="error">error</option>
+          </select>
+        </div>
+      </div>
+      <div class="log-wrap">
+        <table>
+          <thead><tr><th>Time</th><th>Session</th><th>Type</th><th>Tool</th><th>Outcome</th><th>Reason</th></tr></thead>
+          <tbody id="log"></tbody>
+        </table>
+        <div class="empty" id="log-empty">Waiting for traffic…</div>
+      </div>
+    </div>
+  </div>
+
+  <footer>
+    Synthetic traffic generated entirely in your browser — no backend, no external connections.<br>
+    The real dashboard ships with <span class="hl">kcp-harness dashboard</span> and streams live events from the audit log over SSE.
+    &nbsp;·&nbsp; <a href="/kcp-harness/guide/compliance-export">Compliance docs</a>
+  </footer>
+</div>
+
+<script>
+"use strict";
+
+// ---- Authentic vocabulary drawn from the harness domain model -------------
+const AGENTS = ["claude-code", "cursor", "copilot", "windsurf", "cline", "continue", "crush", "openclaw"];
+const MANIFESTS = ["kb://acme-eng", "docs/manifest.kcp", "policies/security.kcp", "https://kb.acme.com/manifest.kcp"];
+const UNGOVERNED_TOOLS = ["Read", "Edit", "Grep", "Glob", "Bash", "WebSearch"];
+const KCP_TOOLS = ["kcp_plan", "kcp_load", "kcp_trace", "kcp_validate"];
+const GOVERNED_TARGETS = [
+  { path: "docs/runbooks/oncall.md", unit: "oncall-runbook", task: "resolve incident INC-4821" },
+  { path: "policies/data-retention.md", unit: "data-retention", task: "answer retention question" },
+  { path: "policies/pci-scope.md", unit: "pci-scope", task: "map PCI boundary" },
+  { path: "src/auth/tokens.ts", unit: "auth-flow", task: "audit token issuance" },
+  { path: "docs/architecture/kcp.md", unit: "kcp-arch", task: "explain planner" },
+  { path: "kb/security/threat-model.md", unit: "threat-model", task: "review threat model" },
+  { path: "policies/access-control.md", unit: "rbac-policy", task: "check RBAC rules" },
+  { path: "docs/runbooks/rotate-keys.md", unit: "key-rotation", task: "rotate signing keys" },
+];
+const GOVERNED_TOOLS = ["Read", "Write", "Grep", "WebFetch"];
+
+// ---- State ----------------------------------------------------------------
+const stats = { sessions: 0, events: 0, governed: 0, blocked: 0, budgetExceeded: 0, drifts: 0, signatureBlocked: 0 };
+let sessions = [];          // active simulated agent sessions
+let seq = 0;
+let running = true;
+let speed = 1.5;            // multiplier
+let targetAgents = 4;
+let burst = [];            // queued forced events (scenario injectors)
+let scenarioBias = null;   // { type, until }
+const MAX_ROWS = 200;
+let evThisSecond = 0;
+const tpHistory = new Array(46).fill(0);
+
+const $ = (id) => document.getElementById(id);
+const rand = (n) => Math.floor(Math.random() * n);
+const pick = (a) => a[rand(a.length)];
+const hex = (n) => Array.from({ length: n }, () => "0123456789abcdef"[rand(16)]).join("");
+const now = () => new Date();
+const pad = (n) => String(n).padStart(2, "0");
+const clock = (d) => pad(d.getHours()) + ":" + pad(d.getMinutes()) + ":" + pad(d.getSeconds());
+
+// ---- Session lifecycle ----------------------------------------------------
+function spawnSession() {
+  const ceiling = pick([5, 10, 20, 25]);
+  const s = {
+    id: hex(8),
+    agent: pick(AGENTS),
+    startedAt: now(),
+    events: 0, governed: 0, blocked: 0,
+    spent: 0, ceiling, currency: "USDC",
+    hasPlan: false,
+  };
+  sessions.push(s);
+  stats.sessions++;
+  emit({ session: s, type: "session_start", tool: "session_start", outcome: "approved",
+         reason: `session ${s.id} started · agent=${s.agent}` });
+  return s;
+}
+
+function endSession(s) {
+  emit({ session: s, type: "session_end", tool: "session_end", outcome: "approved",
+         reason: `session ${s.id} ended · ${s.events} events, ${s.blocked} blocked` });
+  sessions = sessions.filter((x) => x !== s);
+}
+
+// ---- Event generation (classify → govern) ---------------------------------
+function genEvent(s) {
+  // Scenario-forced events first
+  if (burst.length) { const b = burst.shift(); return applyForced(s, b); }
+
+  const roll = Math.random();
+  const bias = scenarioBias && scenarioBias.until > Date.now() ? scenarioBias.type : null;
+
+  // KCP tool — passes through, it IS the governance layer
+  if (roll < 0.12) {
+    const tool = pick(KCP_TOOLS);
+    if (tool === "kcp_plan" || tool === "kcp_load") s.hasPlan = true;
+    return { session: s, type: "tool_call", tool, outcome: "pass-through",
+             reason: "KCP tool — governance layer itself" };
+  }
+
+  // Ungoverned tool — pass-through
+  if (roll < 0.42 && !bias) {
+    const tool = pick(UNGOVERNED_TOOLS);
+    return { session: s, type: "tool_call", tool, outcome: "pass-through",
+             reason: `tool ${tool} does not target a governed domain` };
+  }
+
+  // Governed knowledge-navigation call
+  const tool = pick(GOVERNED_TOOLS);
+  const t = pick(GOVERNED_TARGETS);
+  const manifest = pick(MANIFESTS);
+
+  // Unsigned-manifest attack bias → signature blocked
+  if (bias === "attack" || (!bias && Math.random() < 0.05)) {
+    s.governed++;
+    return { session: s, type: "tool_call", tool, target: t.path, outcome: "blocked", sig: true,
+             reason: `manifest signature unsigned: no signing block in manifest` };
+  }
+
+  // Budget storm bias → budget ceiling exceeded
+  const cost = +(Math.random() * 1.8 + 0.2).toFixed(2);
+  if (bias === "budget" || s.spent + cost > s.ceiling) {
+    s.governed++;
+    return { session: s, type: "budget_exceeded", tool, target: t.path, outcome: "blocked", budget: true,
+             reason: `auto-plan blocked: budget ceiling exceeded — ${s.spent.toFixed(2)}/${s.ceiling} ${s.currency}` };
+  }
+
+  // Plan-first fast path (agent already has an approved plan)
+  if (s.hasPlan && Math.random() < 0.5) {
+    s.governed++;
+    return { session: s, type: "tool_call", tool, target: t.path, outcome: "approved",
+             reason: `path ${t.path} is in approved plan for "${t.task}"` };
+  }
+
+  // Auto-plan: score the unit and decide
+  const score = +(Math.random()).toFixed(2);
+  s.governed++;
+  if (score >= 0.55) {
+    s.spent += cost;
+    s.hasPlan = true;
+    return { session: s, type: "tool_call", tool, target: t.path, outcome: "approved", spend: cost,
+             reason: `auto-plan approved: unit "${t.unit}" (score ${score}) covers ${t.path}` };
+  }
+  // Not selected → fail-closed block
+  return { session: s, type: "tool_call", tool, target: t.path, outcome: "blocked",
+           reason: `auto-plan blocked: no unit covers path ${t.path}` };
+}
+
+function applyForced(s, b) {
+  if (b === "drift") {
+    const m = pick(MANIFESTS), moved = 1 + rand(6);
+    return { session: s, type: "temporal_drift", tool: "temporal_watch", outcome: "blocked", drift: true,
+             reason: `manifest ${m} moved ${moved} unit(s) since plan — as-of ${new Date().toISOString().slice(0,10)}` };
+  }
+  if (b === "invalidate") {
+    return { session: s, type: "plan_invalidated", tool: "temporal_watch", outcome: "blocked", drift: true,
+             reason: `plan invalidated: drift exceeds tolerance — re-plan required` };
+  }
+  return genEvent(s);
+}
+
+// ---- Emit: update counters, session, and render ---------------------------
+function emit(e) {
+  seq++;
+  e.seq = seq;
+  e.ts = now();
+  stats.events++;
+  evThisSecond++;
+
+  const s = e.session;
+  if (s) {
+    s.events++;
+    if (e.type === "tool_call" || e.type === "budget_exceeded") { /* governed tracked in gen */ }
+    if (e.governed) s.governed++;
+    if (e.outcome === "blocked") { s.blocked++; stats.blocked++; }
+    if (e.spend) s.spent += 0; // already added in gen
+  }
+  if (e.type === "tool_call" && (e.outcome === "approved" || (e.outcome === "blocked" && e.target))) stats.governed++;
+  if (e.budget) stats.budgetExceeded++;
+  if (e.drift && e.type === "temporal_drift") stats.drifts++;
+  if (e.sig) stats.signatureBlocked++;
+
+  pushRow(e);
+  renderStats(e);
+}
+
+// ---- Rendering ------------------------------------------------------------
+const log = $("log");
+const logEmpty = $("log-empty");
+let fType = "", fOutcome = "";
+
+function rowMatches(e) {
+  if (fType && e.type !== fType) return false;
+  if (fOutcome && e.outcome !== fOutcome) return false;
+  return true;
+}
+
+function pushRow(e) {
+  if (!rowMatches(e)) return;
+  logEmpty.style.display = "none";
+  const tr = document.createElement("tr");
+  const oc = e.outcome;
+  tr.innerHTML =
+    `<td class="t-time">${clock(e.ts)}</td>` +
+    `<td class="t-sess">${e.session ? e.session.id : "—"}</td>` +
+    `<td class="t-type">${e.type}</td>` +
+    `<td class="t-tool">${e.tool}</td>` +
+    `<td><span class="outcome o-${oc}">${oc}</span></td>` +
+    `<td class="t-reason">${e.reason}</td>`;
+  log.insertBefore(tr, log.firstChild);
+  while (log.childElementCount > MAX_ROWS) log.removeChild(log.lastChild);
+}
+
+function reRenderLog() {
+  // Filters changed — clear; new events will stream in filtered.
+  log.innerHTML = "";
+  logEmpty.style.display = "block";
+  logEmpty.textContent = "Filtered — waiting for matching events…";
+}
+
+const valEls = {
+  sessions: $("s-sessions"), events: $("s-events"), governed: $("s-governed"),
+  blocked: $("s-blocked"), budget: $("s-budget"), drifts: $("s-drifts"), sig: $("s-sig"),
+};
+function renderStats(e) {
+  valEls.sessions.textContent = stats.sessions;
+  valEls.events.textContent = stats.events;
+  valEls.governed.textContent = stats.governed;
+  valEls.blocked.textContent = stats.blocked;
+  valEls.budget.textContent = stats.budgetExceeded;
+  valEls.drifts.textContent = stats.drifts;
+  valEls.sig.textContent = stats.signatureBlocked;
+  // Flash the relevant tile
+  let tile = null;
+  if (e) {
+    if (e.budget) tile = valEls.budget.closest(".stat");
+    else if (e.sig) tile = valEls.sig.closest(".stat");
+    else if (e.drift && e.type === "temporal_drift") tile = valEls.drifts.closest(".stat");
+    else if (e.outcome === "blocked") tile = valEls.blocked.closest(".stat");
+  }
+  if (tile) { tile.classList.remove("flash"); void tile.offsetWidth; tile.classList.add("flash"); }
+}
+
+const sessEl = $("sessions"), sessCount = $("sess-count");
+function renderSessions() {
+  sessCount.textContent = sessions.length;
+  if (!sessions.length) { sessEl.innerHTML = '<li style="color:var(--muted)">No active sessions</li>'; return; }
+  sessEl.innerHTML = sessions.map((s) => {
+    const pct = Math.min(100, (s.spent / s.ceiling) * 100);
+    const col = pct > 85 ? "var(--red)" : pct > 60 ? "var(--yellow)" : "var(--green)";
+    return `<li>
+      <div class="sess-top"><span class="sess-id">${s.id}</span><span class="sess-agent">${s.agent}</span></div>
+      <div class="sess-meta"><span><b>${s.events}</b> events</span><span><b>${s.governed}</b> governed</span><span class="blk"><b>${s.blocked}</b> blocked</span></div>
+      <div class="sess-meta"><span>budget ${s.spent.toFixed(2)} / ${s.ceiling} ${s.currency}</span></div>
+      <div class="budget-bar"><div class="budget-fill" style="width:${pct}%;background:${col}"></div></div>
+    </li>`;
+  }).join("");
+}
+
+// ---- Throughput sparkline -------------------------------------------------
+const spark = $("spark"), tpNow = $("tp-now");
+function renderSpark() {
+  const W = 190, H = 40, n = tpHistory.length;
+  const max = Math.max(4, ...tpHistory);
+  const step = W / (n - 1);
+  const pts = tpHistory.map((v, i) => [i * step, H - (v / max) * (H - 4) - 2]);
+  const line = pts.map((p, i) => (i ? "L" : "M") + p[0].toFixed(1) + " " + p[1].toFixed(1)).join(" ");
+  const area = line + ` L${W} ${H} L0 ${H} Z`;
+  spark.innerHTML =
+    `<defs><linearGradient id="tg" x1="0" y1="0" x2="0" y2="1">
+       <stop offset="0" stop-color="var(--accent)" stop-opacity="0.35"/>
+       <stop offset="1" stop-color="var(--accent)" stop-opacity="0"/></linearGradient></defs>
+     <path d="${area}" fill="url(#tg)"/>
+     <path d="${line}" fill="none" stroke="var(--accent)" stroke-width="1.5" stroke-linejoin="round"/>`;
+}
+
+// ---- Scheduler ------------------------------------------------------------
+function tick() {
+  if (running) {
+    // Maintain the session pool
+    while (sessions.length < targetAgents) spawnSession();
+    if (sessions.length > targetAgents) endSession(sessions[0]);
+    // Occasionally cycle a session out
+    if (sessions.length && Math.random() < 0.015) { endSession(pick(sessions)); }
+
+    // Emit a batch scaled by speed
+    const batch = Math.max(1, Math.round(speed * (0.6 + Math.random())));
+    for (let i = 0; i < batch && sessions.length; i++) {
+      emit(genEvent(pick(sessions)));
+    }
+    renderSessions();
+  }
+  const delay = 900 / speed;
+  setTimeout(tick, delay);
+}
+
+// Per-second throughput sampling
+setInterval(() => {
+  tpHistory.push(evThisSecond); tpHistory.shift();
+  tpNow.textContent = evThisSecond;
+  evThisSecond = 0;
+  renderSpark();
+}, 1000);
+
+// ---- Controls -------------------------------------------------------------
+$("btn-play").onclick = () => {
+  running = !running;
+  $("btn-play").textContent = running ? "⏸ Pause" : "▶ Resume";
+  $("btn-play").classList.toggle("primary", running);
+  $("live").classList.toggle("paused", !running);
+  $("live-label").textContent = running ? "Live" : "Paused";
+};
+const speedMap = { 1: 0.5, 2: 1, 3: 1.5, 4: 2, 5: 3, 6: 4, 7: 6, 8: 8 };
+$("speed").oninput = (e) => { speed = speedMap[e.target.value]; $("speed-label").textContent = speed + "×"; };
+$("agents-up").onclick = () => { targetAgents = Math.min(8, targetAgents + 1); $("agents-n").textContent = targetAgents; };
+$("agents-dn").onclick = () => { targetAgents = Math.max(1, targetAgents - 1); $("agents-n").textContent = targetAgents; };
+
+$("sc-drift").onclick = () => { burst.push("drift", "invalidate"); flashBtn("sc-drift"); };
+$("sc-budget").onclick = () => { scenarioBias = { type: "budget", until: Date.now() + 4000 }; flashBtn("sc-budget"); };
+$("sc-attack").onclick = () => { scenarioBias = { type: "attack", until: Date.now() + 4000 }; flashBtn("sc-attack"); };
+$("sc-reset").onclick = () => {
+  Object.keys(stats).forEach((k) => stats[k] = 0);
+  sessions = []; seq = 0; burst = []; scenarioBias = null;
+  log.innerHTML = ""; logEmpty.style.display = "block"; logEmpty.textContent = "Waiting for traffic…";
+  renderStats(); renderSessions();
+};
+function flashBtn(id) { const b = $(id); b.style.transform = "scale(0.95)"; setTimeout(() => b.style.transform = "", 120); }
+
+$("f-type").onchange = (e) => { fType = e.target.value; reRenderLog(); };
+$("f-outcome").onchange = (e) => { fOutcome = e.target.value; reRenderLog(); };
+
+// ---- Boot -----------------------------------------------------------------
+for (let i = 0; i < targetAgents; i++) spawnSession();
+renderSessions(); renderSpark();
+tick();
+</script>
+</body>
+</html>
