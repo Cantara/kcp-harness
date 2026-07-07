@@ -1,0 +1,40 @@
+{
+  "name": "kcp-harness",
+  "version": "0.1.0",
+  "description": "KCP Compliance Harness — MCP proxy that enforces deterministic knowledge governance for any agent",
+  "type": "module",
+  "bin": {
+    "kcp-harness": "dist/cli.js"
+  },
+  "exports": {
+    ".": "./dist/index.js"
+  },
+  "files": [
+    "dist",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "js-yaml": "^4.1.0",
+    "kcp-agent": "file:../kcp-agent"
+  },
+  "devDependencies": {
+    "@types/js-yaml": "^4.0.9",
+    "@types/node": "^22.0.0",
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "author": "eXOReaction AS",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Cantara/kcp-harness.git"
+  }
+}
