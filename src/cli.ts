@@ -17,6 +17,7 @@ import { loadConfig, parseConfig, type HarnessConfig } from "./config.js";
 import { serveProxy } from "./proxy.js";
 import { generate, generateAll, listAgents } from "./integrations/generate.js";
 import type { IntegrationOptions } from "./integrations/types.js";
+import { exportEvidence } from "./export.js";
 
 const USAGE = `kcp-harness — KCP Compliance Harness
 
@@ -26,6 +27,7 @@ Usage:
   kcp-harness check  [--config harness.yaml]   Validate configuration
   kcp-harness integrate <agent> [options]       Generate agent integration files
   kcp-harness integrate --list                  List supported agents
+  kcp-harness export   [options]               Export compliance evidence
   kcp-harness --version                        Show version
   kcp-harness --help                           Show this help
 
@@ -177,6 +179,41 @@ async function main(): Promise<void> {
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         process.stderr.write(`[kcp-harness] error: ${msg}\n`);
+        process.exit(1);
+      }
+      break;
+    }
+
+    case "export": {
+      const config = existsSync(configPath) ? loadConfig(configPath) : null;
+      const auditPath = getFlag(args, "--audit") ?? config?.audit.path ?? ".kcp-harness/audit.jsonl";
+      const outDir = getFlag(args, "--out") ?? "evidence";
+      const format = (getFlag(args, "--format") ?? "both") as "soc2" | "iso27001" | "both";
+      const org = getFlag(args, "--org");
+      const from = getFlag(args, "--from");
+      const to = getFlag(args, "--to");
+
+      if (!existsSync(auditPath)) {
+        process.stderr.write(`[kcp-harness] audit log not found: ${auditPath}\n`);
+        process.exit(1);
+      }
+
+      try {
+        const result = await exportEvidence({
+          auditPath,
+          outputDir: outDir,
+          format,
+          organization: org,
+          dateRange: from || to ? { from: from ?? "", to: to ?? "" } : undefined,
+        });
+        process.stderr.write(`[kcp-harness] exported ${result.files.length} files to ${result.outputDir}\n`);
+        process.stderr.write(`[kcp-harness]   ${result.summary.events} events, ${result.summary.sessions} sessions\n`);
+        for (const f of result.files) {
+          process.stdout.write(`  ${f}\n`);
+        }
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        process.stderr.write(`[kcp-harness] export error: ${msg}\n`);
         process.exit(1);
       }
       break;

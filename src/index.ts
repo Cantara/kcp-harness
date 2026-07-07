@@ -105,3 +105,17 @@ export {
   type IntegrationOptions,
   type AgentInfo,
 } from "./integrations/types.js";
+
+export {
+  AuditReader,
+  type AuditFilter,
+  type AuditSummary,
+  type SessionEntry,
+  type SessionIndex,
+} from "./audit-reader.js";
+
+export {
+  exportEvidence,
+  type ExportOptions,
+  type ExportResult,
+} from "./export.js";
