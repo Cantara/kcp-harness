@@ -1,0 +1,108 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: npm test
+
+  natives:
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # attach binaries to the release on tag builds
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+      - run: npm ci
+      - run: npm run build
+
+      # Deno compiles the tsc output (plain ESM) into self-contained native
+      # executables, cross-compiled for every target from this one runner.
+      # Permissions: read (harness.yaml + manifests), env (config), net (remote).
+      - name: Compile native executables
+        run: |
+          mkdir -p dist-bin
+          while read -r target out; do
+            deno compile \
+              --allow-read --allow-env --allow-net --allow-run \
+              --node-modules-dir=auto \
+              --target "$target" \
+              --output "dist-bin/$out" \
+              dist/cli.js
+          done <<'EOF'
+          x86_64-unknown-linux-gnu kcp-harness-linux-x64
+          aarch64-unknown-linux-gnu kcp-harness-linux-arm64
+          x86_64-apple-darwin kcp-harness-macos-x64
+          aarch64-apple-darwin kcp-harness-macos-arm64
+          x86_64-pc-windows-msvc kcp-harness-windows-x64.exe
+          EOF
+
+      - name: Smoke test (linux-x64)
+        run: |
+          # --help must work
+          ./dist-bin/kcp-harness-linux-x64 --help
+          # --version must work
+          ./dist-bin/kcp-harness-linux-x64 --version
+          # init must create a harness.yaml template
+          cd /tmp && ./dist-bin/kcp-harness-linux-x64 init
+          test -f harness.yaml
+          # check must validate the template
+          ./dist-bin/kcp-harness-linux-x64 check
+          # integrate --list must list agents
+          ./dist-bin/kcp-harness-linux-x64 integrate --list
+
+      - name: Checksums
+        working-directory: dist-bin
+        run: sha256sum * > SHA256SUMS.txt && cat SHA256SUMS.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kcp-harness-natives
+          path: dist-bin/
+
+      - name: Attach binaries to release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist-bin/*
+
+  publish:
+    needs: [test]
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # OIDC for trusted publishing + provenance attestation
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: npm publish --provenance --access public

@@ -1,0 +1,91 @@
+name: Release
+
+# Cut a release: tags the target ref, cross-compiles native executables,
+# attaches them to a GitHub release, and hands off npm publish to ci.yml
+# (the authorized Trusted Publisher workflow).
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release tag (e.g. v0.1.0)"
+        required: true
+      target:
+        description: "Ref to tag"
+        required: false
+        default: "main"
+
+permissions:
+  contents: write
+  actions: write # dispatch ci.yml for npm publish
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.target }}
+          fetch-depth: 0
+
+      - name: Create and push tag
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git ls-remote --exit-code --tags origin "refs/tags/${{ inputs.version }}" >/dev/null 2>&1; then
+            echo "::notice::tag ${{ inputs.version }} already exists — skipping"
+          else
+            git tag -a "${{ inputs.version }}" -m "kcp-harness ${{ inputs.version }}"
+            git push origin "refs/tags/${{ inputs.version }}"
+          fi
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+      - run: npm ci
+      - run: npm run build
+      - run: npm test
+
+      - name: Compile native executables
+        run: |
+          mkdir -p dist-bin
+          while read -r target out; do
+            deno compile \
+              --allow-read --allow-env --allow-net --allow-run \
+              --node-modules-dir=auto \
+              --target "$target" \
+              --output "dist-bin/$out" \
+              dist/cli.js
+          done <<'EOF'
+          x86_64-unknown-linux-gnu kcp-harness-linux-x64
+          aarch64-unknown-linux-gnu kcp-harness-linux-arm64
+          x86_64-apple-darwin kcp-harness-macos-x64
+          aarch64-apple-darwin kcp-harness-macos-arm64
+          x86_64-pc-windows-msvc kcp-harness-windows-x64.exe
+          EOF
+
+      - name: Smoke test (linux-x64)
+        run: |
+          ./dist-bin/kcp-harness-linux-x64 --help
+          ./dist-bin/kcp-harness-linux-x64 --version
+          cd /tmp && ./dist-bin/kcp-harness-linux-x64 init && ./dist-bin/kcp-harness-linux-x64 check
+
+      - name: Checksums
+        working-directory: dist-bin
+        run: sha256sum * > SHA256SUMS.txt && cat SHA256SUMS.txt
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.version }}
+          generate_release_notes: true
+          files: dist-bin/*
+
+      - name: Hand off npm publish to ci.yml (authorized Trusted Publisher)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh workflow run ci.yml --ref main
