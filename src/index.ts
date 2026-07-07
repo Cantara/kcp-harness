@@ -87,3 +87,21 @@ export {
   type DriftResult,
   type WatchResult,
 } from "./temporal-watch.js";
+
+export {
+  generate,
+  generateAll,
+  listAgents,
+  harnessServerEntry,
+  governedPathsBlock,
+  manifestRef,
+} from "./integrations/generate.js";
+
+export {
+  AGENTS,
+  type AgentTarget,
+  type IntegrationOutput,
+  type IntegrationFile,
+  type IntegrationOptions,
+  type AgentInfo,
+} from "./integrations/types.js";
