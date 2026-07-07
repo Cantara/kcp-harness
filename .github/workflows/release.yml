@@ -72,9 +72,10 @@ jobs:
 
       - name: Smoke test (linux-x64)
         run: |
-          ./dist-bin/kcp-harness-linux-x64 --help
-          ./dist-bin/kcp-harness-linux-x64 --version
-          cd /tmp && ./dist-bin/kcp-harness-linux-x64 init && ./dist-bin/kcp-harness-linux-x64 check
+          BIN="$PWD/dist-bin/kcp-harness-linux-x64"
+          "$BIN" --help
+          "$BIN" --version
+          cd /tmp && "$BIN" init && "$BIN" check
 
       - name: Checksums
         working-directory: dist-bin
