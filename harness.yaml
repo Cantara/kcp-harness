@@ -1,0 +1,38 @@
+# kcp-harness self-governance configuration.
+#
+# The harness dogfoods its own governance layer: this config puts the repo's
+# own source and docs under governance, using the root knowledge.yaml as the
+# manifest. Any agent proxied through `kcp-harness` against this repo has its
+# reads of src/ and docs/ classified, planned, and audited — the same posture
+# the harness gives any other governed domain.
+#
+#   kcp-harness check --config harness.yaml   # validate this file
+#
+# test/manifest.test.ts keeps the self-governance domain pointed at
+# ./knowledge.yaml. Signing is intentionally left off (signature_required is
+# false) — this mirrors kcp-agent, which ships an unsigned root manifest and
+# demonstrates signing on dedicated example manifests instead.
+version: "1.0"
+
+governance:
+  domains:
+    - manifest: "./knowledge.yaml"
+      paths:
+        - "src/"
+        - "docs/"
+
+  policy:
+    fail_closed: true
+    audit_all: true
+    max_units: 5
+    strict: false
+    # Enable to require verified ed25519 signatures on the manifest (see
+    # kcp-agent guides/sign-your-manifest.md for the seal workflow):
+    # signature_required: true
+    # trusted_keys:
+    #   - "./keys/manifest-key.pub"
+
+downstream: []
+
+audit:
+  path: ".kcp-harness/audit.jsonl"
