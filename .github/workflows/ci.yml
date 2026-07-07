@@ -50,7 +50,7 @@ jobs:
           mkdir -p dist-bin
           while read -r target out; do
             deno compile \
-              --allow-read --allow-env --allow-net --allow-run \
+              --allow-read --allow-write --allow-env --allow-net --allow-run \
               --node-modules-dir=auto \
               --target "$target" \
               --output "dist-bin/$out" \
