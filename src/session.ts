@@ -11,7 +11,9 @@
 // 4. Assign monotonic sequence numbers for audit correlation
 
 import { randomUUID } from "node:crypto";
-import type { AgentPlan, PlannedUnit } from "kcp-agent";
+import type { AgentPlan, PlannedUnit, FollowOptions } from "kcp-agent";
+import { BudgetLedger, type BudgetCeiling } from "./budget-ledger.js";
+import { TemporalWatch } from "./temporal-watch.js";
 
 /** An approved plan — the set of units the agent is allowed to access. */
 export interface ApprovedPlan {
@@ -39,10 +41,14 @@ export interface SessionState {
   sequence: number;
   /** Session start time (ISO 8601). */
   startedAt: string;
+  /** Budget ledger — itemized spend tracking. */
+  ledger: BudgetLedger;
+  /** Temporal watcher — detects plan drift. */
+  temporalWatch: TemporalWatch;
 }
 
 /** Create a fresh session state. */
-export function createSession(): SessionState {
+export function createSession(budgetCeiling?: BudgetCeiling): SessionState {
   return {
     id: randomUUID(),
     plans: new Map(),
@@ -50,6 +56,8 @@ export function createSession(): SessionState {
     budgetSpent: 0,
     sequence: 0,
     startedAt: new Date().toISOString(),
+    ledger: new BudgetLedger(budgetCeiling),
+    temporalWatch: new TemporalWatch(),
   };
 }
 

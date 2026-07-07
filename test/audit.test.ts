@@ -1,7 +1,15 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { InMemoryAuditLog, buildEvent, type AuditEvent } from "../src/audit.js";
+import {
+  InMemoryAuditLog,
+  buildEvent,
+  buildLifecycleEvent,
+  buildBudgetEvent,
+  buildDriftEvent,
+  type AuditEvent,
+} from "../src/audit.js";
 import type { Classification } from "../src/classifier.js";
 import type { GovernanceDecision } from "../src/governor.js";
+import type { DriftResult } from "../src/temporal-watch.js";
 
 describe("InMemoryAuditLog", () => {
   let log: InMemoryAuditLog;
@@ -61,8 +69,9 @@ describe("buildEvent", () => {
 
     expect(event.sessionId).toBe("session-123");
     expect(event.sequence).toBe(1);
-    expect(event.toolCall.name).toBe("Read");
-    expect(event.classification.governed).toBe(true);
+    expect(event.type).toBe("tool_call");
+    expect(event.toolCall!.name).toBe("Read");
+    expect(event.classification!.governed).toBe(true);
     expect(event.governance?.approved).toBe(true);
     expect(event.outcome).toBe("approved");
     expect(event.durationMs).toBe(42);
@@ -82,7 +91,7 @@ describe("buildEvent", () => {
       10,
     );
 
-    expect(event.toolCall.args["content"]).toMatch(/\[\d+ chars redacted\]/);
+    expect(event.toolCall!.args["content"]).toMatch(/\[\d+ chars redacted\]/);
   });
 
   it("redacts Bash password patterns", () => {
@@ -98,8 +107,8 @@ describe("buildEvent", () => {
       10,
     );
 
-    expect(event.toolCall.args["command"]).toContain("[REDACTED]");
-    expect(event.toolCall.args["command"]).not.toContain("sk-12345");
+    expect(event.toolCall!.args["command"]).toContain("[REDACTED]");
+    expect(event.toolCall!.args["command"]).not.toContain("sk-12345");
   });
 
   it("records errors", () => {
@@ -134,11 +143,75 @@ describe("buildEvent", () => {
   });
 });
 
+describe("buildLifecycleEvent", () => {
+  it("creates session_start event", () => {
+    const event = buildLifecycleEvent("s1", 1, "session_start", { domains: 2 });
+    expect(event.type).toBe("session_start");
+    expect(event.outcome).toBe("approved");
+    expect(event.toolCall!.args["domains"]).toBe(2);
+  });
+
+  it("creates session_end event", () => {
+    const event = buildLifecycleEvent("s1", 99, "session_end");
+    expect(event.type).toBe("session_end");
+    expect(event.sequence).toBe(99);
+  });
+});
+
+describe("buildBudgetEvent", () => {
+  it("creates accepted spend event", () => {
+    const snapshot = { totals: { USDC: 0.25 }, remaining: 0.75, entryCount: 1, ceiling: { amount: 1, currency: "USDC" } };
+    const event = buildBudgetEvent("s1", 5, true, snapshot, { amount: 0.25, currency: "USDC" });
+    expect(event.type).toBe("budget_spend");
+    expect(event.outcome).toBe("approved");
+    expect(event.budget!.totals["USDC"]).toBeCloseTo(0.25);
+    expect(event.budget!.remaining).toBeCloseTo(0.75);
+  });
+
+  it("creates rejected spend event", () => {
+    const snapshot = { totals: { USDC: 0.90 }, remaining: 0.10, entryCount: 3, ceiling: { amount: 1, currency: "USDC" } };
+    const event = buildBudgetEvent("s1", 6, false, snapshot);
+    expect(event.type).toBe("budget_exceeded");
+    expect(event.outcome).toBe("blocked");
+  });
+});
+
+describe("buildDriftEvent", () => {
+  it("creates temporal drift event", () => {
+    const drift: DriftResult = {
+      manifest: "./knowledge.yaml",
+      task: "test",
+      drifted: true,
+      summary: "temporal drift detected: 1 unit(s) dropped",
+      diff: {
+        a: { project: "test", version: "1.0", task: "test", asOf: "2026-07-06" },
+        b: { project: "test", version: "1.0", task: "test", asOf: "2026-07-07" },
+        identical: false,
+        moves: [{ id: "unit-1", direction: "selected_to_skipped", from: { score: 10 }, to: { reason: "expired" } }],
+        scoreChanges: [],
+        presence: [],
+        budgetShifts: [],
+        reasonChanges: [],
+        warningChanges: { added: [], removed: [] },
+      },
+      checkedAt: new Date().toISOString(),
+    };
+
+    const event = buildDriftEvent("s1", 10, drift);
+    expect(event.type).toBe("temporal_drift");
+    expect(event.outcome).toBe("blocked");
+    expect(event.drift!.manifest).toBe("./knowledge.yaml");
+    expect(event.drift!.movedUnits).toBe(1);
+    expect(event.drift!.newPlanAsOf).toBe("2026-07-07");
+  });
+});
+
 function makeEvent(outcome: AuditEvent["outcome"], seq = 1): AuditEvent {
   return {
     timestamp: new Date().toISOString(),
     sessionId: "test-session",
     sequence: seq,
+    type: "tool_call",
     toolCall: { name: "Read", args: { file_path: "docs/api.md" } },
     classification: { governed: true, reason: "test" },
     outcome,

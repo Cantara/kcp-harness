@@ -25,8 +25,12 @@ export {
   AuditLog,
   InMemoryAuditLog,
   buildEvent,
+  buildLifecycleEvent,
+  buildBudgetEvent,
+  buildDriftEvent,
   type AuditWriter,
   type AuditEvent,
+  type AuditEventType,
 } from "./audit.js";
 
 export {
@@ -66,3 +70,20 @@ export {
 } from "./config.js";
 
 export { callKcpTool } from "./kcp-bridge.js";
+
+export {
+  BudgetLedger,
+  type BudgetCeiling,
+  type LedgerEntry,
+  type LedgerSource,
+  type LedgerCost,
+  type LedgerSnapshot,
+  type SpendResult,
+} from "./budget-ledger.js";
+
+export {
+  TemporalWatch,
+  type WatchedPlan,
+  type DriftResult,
+  type WatchResult,
+} from "./temporal-watch.js";

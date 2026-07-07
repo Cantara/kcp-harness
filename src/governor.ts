@@ -34,6 +34,7 @@ import type { GovernancePolicy, GovernedDomain } from "./config.js";
 import type { Classification } from "./classifier.js";
 import type { SessionState, ApprovedPlan } from "./session.js";
 import { isPathApproved, addPlan, recordSpend } from "./session.js";
+import type { SpendResult } from "./budget-ledger.js";
 
 /** The governor's decision for a tool call. */
 export interface GovernanceDecision {
@@ -49,6 +50,8 @@ export interface GovernanceDecision {
   reason: string;
   /** The approved plan that matched (for plan-first mode). */
   approvedPlan?: ApprovedPlan;
+  /** Budget spend result (for auto-plan mode with costs). */
+  budgetSpend?: SpendResult;
 }
 
 /**
@@ -174,15 +177,35 @@ async function autoGovern(
     // Register the plan in the session for future fast-path lookups
     addPlan(session, domain.manifest, task, rootPlan);
 
-    // Track budget spend
+    // Track budget spend via ledger
+    let budgetSpend: SpendResult | undefined;
     if (rootPlan.budget?.projectedSpend) {
+      const currency = rootPlan.budget.currency ?? "USDC";
+      budgetSpend = session.ledger.recordPlanSpend(
+        domain.manifest, task, rootPlan.budget.projectedSpend, currency,
+      );
+      // Also update the legacy counter
       recordSpend(session, rootPlan.budget.projectedSpend);
+
+      if (!budgetSpend.accepted) {
+        return {
+          approved: false,
+          mode: "auto-plan",
+          plan: rootPlan,
+          budgetSpend,
+          reason: `auto-plan blocked: budget ceiling exceeded — ${budgetSpend.reason}`,
+        };
+      }
     }
+
+    // Register with temporal watcher
+    session.temporalWatch.register(domain.manifest, task, rootPlan, followOptions);
 
     return {
       approved: true,
       mode: "auto-plan",
       plan: rootPlan,
+      budgetSpend,
       reason: `auto-plan approved: unit "${matchingUnit.id}" (score ${matchingUnit.score}) covers ${target}`,
     };
   }

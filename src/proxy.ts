@@ -20,12 +20,16 @@ import {
   AuditLog,
   InMemoryAuditLog,
   buildEvent,
+  buildLifecycleEvent,
+  buildBudgetEvent,
+  buildDriftEvent,
   type AuditWriter,
   type AuditEvent,
 } from "./audit.js";
 import { createSession, nextSequence, type SessionState } from "./session.js";
 import { DownstreamManager, type McpTool } from "./downstream.js";
 import { callKcpTool } from "./kcp-bridge.js";
+import type { BudgetCeiling } from "./budget-ledger.js";
 
 const HARNESS_VERSION = "0.1.0";
 const PROTOCOL_VERSION = "2025-06-18";
@@ -65,6 +69,20 @@ const HARNESS_TOOLS: McpTool[] = [
       "Use this to see what knowledge the governance layer has approved.",
     inputSchema: { type: "object", properties: {} },
   },
+  {
+    name: "harness_budget",
+    description:
+      "Show the session budget ledger: ceiling, running totals, remaining budget, " +
+      "and itemized spend history.",
+    inputSchema: { type: "object", properties: {} },
+  },
+  {
+    name: "harness_temporal_check",
+    description:
+      "Check all approved plans for temporal drift: re-evaluate against current " +
+      "time and report any plans that would produce different results now.",
+    inputSchema: { type: "object", properties: {} },
+  },
 ];
 
 /** KCP tool names that the harness routes to kcp-agent directly. */
@@ -87,11 +105,25 @@ export class HarnessProxy {
     this.config = options.config;
     this.downstream = new DownstreamManager();
     this.audit = options.audit ?? new AuditLog(options.config.audit.path);
-    this.session = createSession();
+
+    // Derive budget ceiling from policy
+    const policy = options.config.governance.policy;
+    const ceiling: BudgetCeiling | undefined = policy.budget
+      ? { amount: policy.budget.amount, currency: policy.budget.currency ?? "USDC" }
+      : undefined;
+    this.session = createSession(ceiling);
   }
 
   /** Start the proxy: spawn downstream servers and begin serving. */
   async start(): Promise<void> {
+    // Emit session start event
+    const seq = nextSequence(this.session);
+    this.audit.emit(buildLifecycleEvent(this.session.id, seq, "session_start", {
+      domains: this.config.governance.domains.length,
+      downstream: this.config.downstream.map((d) => d.name),
+      budget: this.session.ledger.getCeiling(),
+    }));
+
     // Spawn and initialize downstream servers
     for (const ds of this.config.downstream) {
       try {
@@ -105,6 +137,15 @@ export class HarnessProxy {
 
   /** Shut down the proxy and all downstream connections. */
   async stop(): Promise<void> {
+    // Emit session end event
+    const seq = nextSequence(this.session);
+    this.audit.emit(buildLifecycleEvent(this.session.id, seq, "session_end", {
+      totalCalls: this.session.sequence,
+      budgetSnapshot: this.session.ledger.snapshot(),
+      plansCount: this.session.plans.size,
+      knownUnitsCount: this.session.known.size,
+    }));
+
     await this.downstream.shutdown();
   }
 
@@ -370,6 +411,59 @@ export class HarnessProxy {
         }
         return {
           content: [{ type: "text", text: JSON.stringify({ sessionId: this.session.id, plans }, null, 2) }],
+          isError: false,
+        };
+      }
+
+      case "harness_budget": {
+        const snapshot = this.session.ledger.snapshot();
+        const entries = this.session.ledger.getEntries();
+        return {
+          content: [{
+            type: "text",
+            text: JSON.stringify({
+              ...snapshot,
+              entries: entries.map((e) => ({
+                seq: e.seq,
+                timestamp: e.timestamp,
+                manifest: e.source.manifest,
+                unitId: e.source.unitId,
+                amount: e.cost.amount,
+                currency: e.cost.currency,
+                method: e.cost.method,
+                runningTotal: e.runningTotal,
+              })),
+            }, null, 2),
+          }],
+          isError: false,
+        };
+      }
+
+      case "harness_temporal_check": {
+        const watchResult = await this.session.temporalWatch.check();
+
+        // Emit drift audit events for any drifted plans
+        for (const drift of watchResult.drifted) {
+          const driftSeq = nextSequence(this.session);
+          this.audit.emit(buildDriftEvent(this.session.id, driftSeq, drift));
+        }
+
+        return {
+          content: [{
+            type: "text",
+            text: JSON.stringify({
+              checked: watchResult.checked,
+              stable: watchResult.stable,
+              drifted: watchResult.drifted.map((d) => ({
+                manifest: d.manifest,
+                task: d.task,
+                summary: d.summary,
+                moves: d.diff?.moves.length ?? 0,
+                scoreChanges: d.diff?.scoreChanges.length ?? 0,
+              })),
+              errors: watchResult.errors,
+            }, null, 2),
+          }],
           isError: false,
         };
       }
