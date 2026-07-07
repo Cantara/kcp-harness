@@ -51,6 +51,8 @@ jobs:
       - run: npm test
 
       - name: Compile native executables
+        env:
+          DENO_MINIMUM_DEPENDENCY_AGE: "0"
         run: |
           mkdir -p dist-bin
           while read -r target out; do

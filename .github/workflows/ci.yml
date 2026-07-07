@@ -44,6 +44,8 @@ jobs:
       # executables, cross-compiled for every target from this one runner.
       # Permissions: read (harness.yaml + manifests), env (config), net (remote).
       - name: Compile native executables
+        env:
+          DENO_MINIMUM_DEPENDENCY_AGE: "0"
         run: |
           mkdir -p dist-bin
           while read -r target out; do
