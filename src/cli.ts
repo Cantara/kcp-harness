@@ -11,9 +11,12 @@
 // by --config). The config declares governed domains, policies, downstream
 // MCP servers, and audit log settings.
 
-import { readFileSync, writeFileSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { loadConfig, parseConfig, type HarnessConfig } from "./config.js";
 import { serveProxy } from "./proxy.js";
+import { generate, generateAll, listAgents } from "./integrations/generate.js";
+import type { IntegrationOptions } from "./integrations/types.js";
 
 const USAGE = `kcp-harness — KCP Compliance Harness
 
@@ -21,8 +24,12 @@ Usage:
   kcp-harness serve  [--config harness.yaml]   Start the MCP proxy
   kcp-harness init                             Create a harness.yaml template
   kcp-harness check  [--config harness.yaml]   Validate configuration
+  kcp-harness integrate <agent> [options]       Generate agent integration files
+  kcp-harness integrate --list                  List supported agents
   kcp-harness --version                        Show version
   kcp-harness --help                           Show this help
+
+Agents: claude-code, cursor, windsurf, cline, continue, copilot, copilot-cli, crush, openclaw
 
 The harness is an MCP proxy that enforces deterministic knowledge
 governance for any agent. It intercepts tool calls, classifies them
@@ -118,6 +125,55 @@ async function main(): Promise<void> {
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         process.stderr.write(`[kcp-harness] config error: ${msg}\n`);
+        process.exit(1);
+      }
+      break;
+    }
+
+    case "integrate": {
+      const agent = args[1];
+
+      if (!agent || agent === "--list") {
+        const agents = listAgents();
+        process.stdout.write("Supported agents:\n");
+        for (const a of agents) {
+          process.stdout.write(`  ${a}\n`);
+        }
+        break;
+      }
+
+      const opts: IntegrationOptions = {
+        manifest: getFlag(args, "--manifest"),
+        harnessConfig: getFlag(args, "--config"),
+        harnessCommand: getFlag(args, "--command"),
+        paths: getFlag(args, "--paths")?.split(","),
+      };
+
+      try {
+        const output = generate(agent as any, opts);
+        const outDir = getFlag(args, "--out") ?? ".";
+        const dryRun = args.includes("--dry-run");
+
+        process.stderr.write(`[kcp-harness] generating ${output.name} integration (${output.files.length} files)\n`);
+
+        for (const file of output.files) {
+          const filePath = join(outDir, file.path);
+          if (dryRun) {
+            process.stdout.write(`--- ${filePath} ---\n`);
+            process.stdout.write(file.content);
+            process.stdout.write("\n");
+          } else {
+            const dir = dirname(filePath);
+            mkdirSync(dir, { recursive: true });
+            writeFileSync(filePath, file.content, "utf-8");
+            process.stderr.write(`[kcp-harness]   wrote ${filePath}\n`);
+          }
+        }
+
+        process.stdout.write("\n" + output.instructions + "\n");
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        process.stderr.write(`[kcp-harness] error: ${msg}\n`);
         process.exit(1);
       }
       break;
