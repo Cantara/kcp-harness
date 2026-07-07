@@ -35,6 +35,10 @@ export interface GovernancePolicy {
   strict?: boolean;
   /** Environment for federation context selection (dev/test/staging/prod). */
   env?: string;
+  /** Require verified signatures on all manifests (default: false). */
+  signature_required?: boolean;
+  /** Trusted public keys for signature verification (paths, URLs, or inline). */
+  trusted_keys?: string[];
 }
 
 /** A downstream MCP server to proxy tool calls to. */
@@ -125,6 +129,8 @@ function parsePolicy(raw: unknown): GovernancePolicy {
     max_units: p["max_units"] === undefined ? DEFAULT_POLICY.max_units : Number(p["max_units"]),
     strict: p["strict"] === true,
     env: p["env"] === undefined ? undefined : String(p["env"]),
+    signature_required: p["signature_required"] === true,
+    trusted_keys: Array.isArray(p["trusted_keys"]) ? p["trusted_keys"].map(String) : undefined,
   };
 }
 

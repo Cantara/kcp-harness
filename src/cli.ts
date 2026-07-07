@@ -37,7 +37,7 @@ as knowledge-navigation or pass-through, and routes governed calls
 through the kcp-agent planner before execution.
 `;
 
-const VERSION = "0.1.0";
+const VERSION = "0.4.0";
 
 const TEMPLATE = `# kcp-harness configuration
 version: "1.0"
@@ -63,6 +63,9 @@ governance:
     #   currency: USDC
     # context_budget: 50000
     # env: prod
+    # signature_required: true
+    # trusted_keys:
+    #   - "./keys/manifest-key.pem"
 
 downstream:
   # - name: "filesystem"
