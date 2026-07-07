@@ -88,7 +88,7 @@ export function classify(
   }
 
   // Rule 3: extract path and match against governed path prefixes
-  const pathExtractor = PATH_EXTRACTORS[toolName];
+  const pathExtractor = Object.hasOwn(PATH_EXTRACTORS, toolName) ? PATH_EXTRACTORS[toolName] : undefined;
   if (pathExtractor) {
     const target = pathExtractor(args);
     if (target) {
@@ -111,7 +111,7 @@ export function classify(
   }
 
   // Rule 4: extract URL and match against governed URL prefixes
-  const urlExtractor = URL_EXTRACTORS[toolName];
+  const urlExtractor = Object.hasOwn(URL_EXTRACTORS, toolName) ? URL_EXTRACTORS[toolName] : undefined;
   if (urlExtractor) {
     const target = urlExtractor(args);
     if (target) {
@@ -168,11 +168,26 @@ function str(v: unknown): string | undefined {
   return typeof v === "string" ? v : undefined;
 }
 
-/** Normalize a file path: strip leading ./ and trailing /, collapse //. */
+/** Normalize a file path: resolve ../, strip leading ./, collapse //. */
 export function normalizePath(p: string): string {
   let n = p.replace(/\/+/g, "/");
   if (n.startsWith("./")) n = n.slice(2);
-  // Don't strip leading / — absolute paths stay absolute
+
+  // Resolve ../ segments to prevent traversal bypass
+  const parts = n.split("/");
+  const resolved: string[] = [];
+  for (const part of parts) {
+    if (part === "..") {
+      if (resolved.length > 0 && resolved[resolved.length - 1] !== "..") {
+        resolved.pop();
+      }
+      // else: leading ../ — keep it (can't resolve beyond root)
+    } else if (part !== ".") {
+      resolved.push(part);
+    }
+  }
+  n = resolved.join("/");
+
   return n;
 }
 
@@ -204,8 +219,20 @@ function extractPathPrefix(pattern: string | undefined): string | undefined {
 /** Best-effort extraction of file paths from Bash commands. */
 function extractBashTarget(command: string | undefined): string | undefined {
   if (!command) return undefined;
-  // Match common file-access commands: cat, head, tail, less, more, vi, nano
-  const fileCommands = /\b(?:cat|head|tail|less|more|vi|vim|nano|code)\s+["']?([^\s"'|;&]+)/;
+  // Match common file-access commands: read, copy, move, link, archive
+  const fileCommands = /\b(?:cat|head|tail|less|more|vi|vim|nano|code|cp|mv|ln|tar|zip|scp|rsync)\s+(?:-[^\s]*\s+)*["']?([^\s"'|;&]+)/;
   const m = command.match(fileCommands);
-  return m?.[1] ?? undefined;
+  if (m?.[1]) return m[1];
+
+  // Match redirect targets: > or >> followed by a path
+  const redirect = /[>]\s*["']?([^\s"'|;&]+)/;
+  const r = command.match(redirect);
+  if (r?.[1]) return r[1];
+
+  // Match programming language file access: python/node/ruby -c '...open("path")...'
+  const langRead = /\bopen\s*\(\s*["']([^"']+)["']\s*\)/;
+  const l = command.match(langRead);
+  if (l?.[1]) return l[1];
+
+  return undefined;
 }

@@ -197,7 +197,7 @@ export function buildDriftEvent(
 }
 
 /** Redact sensitive values from tool arguments for audit logging. */
-function sanitizeArgs(toolName: string, args: Record<string, unknown>): Record<string, unknown> {
+export function sanitizeArgs(toolName: string, args: Record<string, unknown>): Record<string, unknown> {
   const sanitized = { ...args };
 
   // Redact content from Write calls (could be large/sensitive)

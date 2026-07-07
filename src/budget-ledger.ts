@@ -86,6 +86,16 @@ export class BudgetLedger {
   /** Record a spend event. Returns whether it was accepted. */
   record(source: LedgerSource, cost: LedgerCost): SpendResult {
     const currency = cost.currency || "USDC";
+
+    // Reject negative amounts — no refunds through the ledger
+    if (cost.amount < 0) {
+      return {
+        accepted: false,
+        total: this.totals.get(currency) ?? 0,
+        reason: `negative spend rejected: ${cost.amount} ${currency}`,
+      };
+    }
+
     const currentTotal = this.totals.get(currency) ?? 0;
     const newTotal = round6(currentTotal + cost.amount);
 
