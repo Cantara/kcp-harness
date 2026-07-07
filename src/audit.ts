@@ -15,6 +15,7 @@
 
 import { appendFileSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
+import type { SignatureResult } from "kcp-agent";
 import type { Classification } from "./classifier.js";
 import type { GovernanceDecision } from "./governor.js";
 import type { LedgerSnapshot } from "./budget-ledger.js";
@@ -65,6 +66,8 @@ export interface AuditEvent {
     movedUnits?: number;
     newPlanAsOf?: string;
   };
+  /** Manifest signature verification result. */
+  signature?: SignatureResult;
 }
 
 /** Append-only audit log writer. */
@@ -133,6 +136,7 @@ export function buildEvent(
     outcome,
     durationMs,
     error,
+    signature: governance?.signature,
   };
 }
 

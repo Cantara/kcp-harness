@@ -29,6 +29,7 @@ import {
   type DecisionTrace,
   type PlanOptions,
   type FollowOptions,
+  type SignatureResult,
 } from "kcp-agent";
 import type { GovernancePolicy, GovernedDomain } from "./config.js";
 import type { Classification } from "./classifier.js";
@@ -52,6 +53,8 @@ export interface GovernanceDecision {
   approvedPlan?: ApprovedPlan;
   /** Budget spend result (for auto-plan mode with costs). */
   budgetSpend?: SpendResult;
+  /** Manifest signature verification result (when signature checking is active). */
+  signature?: SignatureResult;
 }
 
 /**
@@ -152,6 +155,19 @@ async function autoGovern(
       approved: false,
       mode: "blocked",
       reason: `manifest error: ${tree.error}`,
+      signature: tree.signature,
+    };
+  }
+
+  // Signature enforcement: if required, block on non-verified signatures
+  if (policy.signature_required && tree.signature?.status !== "verified") {
+    const status = tree.signature?.status ?? "unsigned";
+    const detail = tree.signature?.detail ?? "no signing block in manifest";
+    return {
+      approved: false,
+      mode: "blocked",
+      reason: `manifest signature ${status}: ${detail}`,
+      signature: tree.signature,
     };
   }
 
@@ -193,6 +209,7 @@ async function autoGovern(
           mode: "auto-plan",
           plan: rootPlan,
           budgetSpend,
+          signature: tree.signature,
           reason: `auto-plan blocked: budget ceiling exceeded — ${budgetSpend.reason}`,
         };
       }
@@ -206,6 +223,7 @@ async function autoGovern(
       mode: "auto-plan",
       plan: rootPlan,
       budgetSpend,
+      signature: tree.signature,
       reason: `auto-plan approved: unit "${matchingUnit.id}" (score ${matchingUnit.score}) covers ${target}`,
     };
   }
@@ -220,6 +238,7 @@ async function autoGovern(
       approved: false,
       mode: "auto-plan",
       plan: rootPlan,
+      signature: tree.signature,
       reason: `auto-plan blocked: unit "${ineligibleUnit.id}" covers ${target} but is not load-eligible (${ineligibleUnit.reasons.filter(r => r.startsWith("unaffordable") || r.startsWith("needs")).join("; ") || "gate restriction"})`,
     };
   }
@@ -237,6 +256,7 @@ async function autoGovern(
     approved: false,
     mode: "auto-plan",
     plan: rootPlan,
+    signature: tree.signature,
     reason: `auto-plan blocked: ${skipReason}`,
   };
 }
@@ -265,6 +285,8 @@ function buildFollowOptions(policy: GovernancePolicy, session: SessionState): Fo
     planOptions,
     maxDepth: 0,       // auto-plan doesn't follow federation by default
     fetchGuard: {},    // default guards (no private hosts, https only)
+    requireSignature: policy.signature_required ?? false,
+    trustedKey: policy.trusted_keys?.[0],  // FollowOptions takes a single key
   };
 }
 
