@@ -119,3 +119,8 @@ export {
   type ExportOptions,
   type ExportResult,
 } from "./export.js";
+
+export {
+  DashboardServer,
+  type DashboardOptions,
+} from "./dashboard/server.js";

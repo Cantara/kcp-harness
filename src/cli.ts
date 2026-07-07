@@ -18,6 +18,7 @@ import { serveProxy } from "./proxy.js";
 import { generate, generateAll, listAgents } from "./integrations/generate.js";
 import type { IntegrationOptions } from "./integrations/types.js";
 import { exportEvidence } from "./export.js";
+import { DashboardServer } from "./dashboard/server.js";
 
 const USAGE = `kcp-harness — KCP Compliance Harness
 
@@ -28,6 +29,7 @@ Usage:
   kcp-harness integrate <agent> [options]       Generate agent integration files
   kcp-harness integrate --list                  List supported agents
   kcp-harness export   [options]               Export compliance evidence
+  kcp-harness dashboard [options]              Launch compliance dashboard
   kcp-harness --version                        Show version
   kcp-harness --help                           Show this help
 
@@ -216,6 +218,34 @@ async function main(): Promise<void> {
         process.stderr.write(`[kcp-harness] export error: ${msg}\n`);
         process.exit(1);
       }
+      break;
+    }
+
+    case "dashboard": {
+      const config = existsSync(configPath) ? loadConfig(configPath) : null;
+      const auditPath = getFlag(args, "--audit") ?? config?.audit.path ?? ".kcp-harness/audit.jsonl";
+      const port = Number(getFlag(args, "--port") ?? "3847");
+      const host = getFlag(args, "--host") ?? "127.0.0.1";
+
+      if (!existsSync(auditPath)) {
+        process.stderr.write(`[kcp-harness] audit log not found: ${auditPath}\n`);
+        process.stderr.write(`[kcp-harness] the dashboard reads from the audit log — run the proxy first\n`);
+        process.exit(1);
+      }
+
+      const dashboard = new DashboardServer({ auditPath, port, host });
+      await dashboard.start();
+      process.stderr.write(`[kcp-harness] dashboard running at ${dashboard.getAddress()}\n`);
+      process.stderr.write(`[kcp-harness] watching ${auditPath} for live updates\n`);
+
+      // Keep running until SIGINT/SIGTERM
+      const shutdown = async () => {
+        process.stderr.write(`\n[kcp-harness] shutting down dashboard\n`);
+        await dashboard.stop();
+        process.exit(0);
+      };
+      process.on("SIGINT", shutdown);
+      process.on("SIGTERM", shutdown);
       break;
     }
 
