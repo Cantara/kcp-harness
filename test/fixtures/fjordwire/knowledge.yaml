@@ -1,0 +1,88 @@
+# Fjordwire test fixture — copy of kcp-agent/examples/fjordwire/knowledge.yaml
+# for CI-independent testing. Keep in sync with upstream.
+
+kcp_version: "0.25"
+project: fjordwire-newsstand
+version: 1.0.0
+updated: "2026-07-05"
+language: en
+
+trust:
+  provenance:
+    publisher: "Fjordwire AS"
+
+payment:
+  default_tier: free
+  methods:
+    - type: free
+
+rate_limits:
+  default: {requests_per_minute: 10}
+
+units:
+  - id: front-page
+    path: index.md
+    intent: "What stories is Fjordwire covering right now, and what does each cost?"
+    scope: global
+    audience: [agent, human]
+    triggers: [front page, headlines, pricing]
+    size_tokens: 200
+    hints: {load_strategy: eager}
+
+  - id: chipfab-exclusive
+    path: stories/chipfab-exclusive.md
+    intent: "Exclusive: the sovereign compute award decision and the winning bid"
+    scope: module
+    audience: [agent]
+    triggers: [sovereign, compute, award, exclusive]
+    size_tokens: 2600
+    temporal:
+      valid_from: "2026-07-05"
+    payment:
+      default_tier: metered
+      methods:
+        - {type: x402, currency: USDC, price_per_request: "0.25", networks: [base]}
+
+  - id: datacenter-power
+    path: stories/datacenter-power.md
+    intent: "Live Nordic datacenter power-grid capacity feed for the compute award"
+    scope: module
+    audience: [agent]
+    triggers: [datacenter, power grid, capacity, compute]
+    size_tokens: 900
+    payment:
+      default_tier: metered
+      methods:
+        - {type: x402, currency: USDC, price_per_request: "0.05", networks: [base]}
+
+  - id: subsea-cable-feature
+    path: stories/subsea-cable-feature.md
+    intent: "Feature: the subsea cable route that decided the compute award"
+    scope: module
+    audience: [agent]
+    triggers: [subsea, cable, compute]
+    size_tokens: 1400
+    payment:
+      default_tier: metered
+      methods:
+        - {type: x402, currency: USDC, price_per_request: "0.15", networks: [base]}
+
+  - id: free-summary
+    path: stories/summary.md
+    intent: "Free summary of the sovereign compute award"
+    scope: module
+    audience: [agent]
+    triggers: [sovereign, compute, award]
+    size_tokens: 300
+
+  - id: chipfab-rumour
+    path: stories/chipfab-rumour.md
+    intent: "Rumour round-up: who is favourite for the sovereign compute award?"
+    scope: module
+    audience: [agent]
+    triggers: [sovereign, compute, award, rumour]
+    size_tokens: 1100
+    temporal:
+      valid_from: "2026-06-28"
+      valid_until: "2026-07-05"
+      superseded_by: chipfab-exclusive

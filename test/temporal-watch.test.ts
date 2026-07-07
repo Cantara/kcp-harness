@@ -5,9 +5,10 @@ import { resolve } from "node:path";
 import { TemporalWatch } from "../src/temporal-watch.js";
 import { planTree, plans, type FollowOptions, type AgentPlan } from "kcp-agent";
 
+// Resolve the fjordwire test fixture (bundled in repo, no sibling checkout needed)
 const FJORDWIRE = resolve(
   import.meta.dirname ?? ".",
-  "../../kcp-agent/examples/fjordwire/knowledge.yaml",
+  "fixtures/fjordwire/knowledge.yaml",
 );
 
 const defaultFollow: FollowOptions = {

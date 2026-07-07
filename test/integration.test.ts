@@ -10,10 +10,10 @@ import { govern } from "../src/governor.js";
 import { createSession, addPlan, isPathApproved } from "../src/session.js";
 import type { HarnessConfig, GovernedDomain, GovernancePolicy } from "../src/config.js";
 
-// Resolve the fjordwire example manifest from kcp-agent
+// Resolve the fjordwire test fixture (bundled in repo, no sibling checkout needed)
 const FJORDWIRE_MANIFEST = resolve(
   import.meta.dirname ?? ".",
-  "../../kcp-agent/examples/fjordwire/knowledge.yaml",
+  "fixtures/fjordwire/knowledge.yaml",
 );
 
 const fjordwireDomain: GovernedDomain = {
