@@ -65,17 +65,18 @@ jobs:
 
       - name: Smoke test (linux-x64)
         run: |
+          BIN="$PWD/dist-bin/kcp-harness-linux-x64"
           # --help must work
-          ./dist-bin/kcp-harness-linux-x64 --help
+          "$BIN" --help
           # --version must work
-          ./dist-bin/kcp-harness-linux-x64 --version
+          "$BIN" --version
           # init must create a harness.yaml template
-          cd /tmp && ./dist-bin/kcp-harness-linux-x64 init
+          cd /tmp && "$BIN" init
           test -f harness.yaml
           # check must validate the template
-          ./dist-bin/kcp-harness-linux-x64 check
+          "$BIN" check
           # integrate --list must list agents
-          ./dist-bin/kcp-harness-linux-x64 integrate --list
+          "$BIN" integrate --list
 
       - name: Checksums
         working-directory: dist-bin
