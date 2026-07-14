@@ -33,7 +33,7 @@ Usage:
   kcp-harness --version                        Show version
   kcp-harness --help                           Show this help
 
-Agents: claude-code, cursor, windsurf, cline, continue, copilot, copilot-cli, crush, openclaw
+Agents: pi, claude-code, cursor, windsurf, cline, continue, copilot, copilot-cli, crush, openclaw
 
 The harness is an MCP proxy that enforces deterministic knowledge
 governance for any agent. It intercepts tool calls, classifies them

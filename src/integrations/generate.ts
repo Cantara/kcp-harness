@@ -11,6 +11,7 @@ import type {
   IntegrationOptions,
 } from "./types.js";
 
+import { generatePi } from "./pi.js";
 import { generateClaudeCode } from "./claude-code.js";
 import { generateCursor } from "./cursor.js";
 import { generateWindsurf } from "./windsurf.js";
@@ -21,6 +22,7 @@ import { generateCrush } from "./crush.js";
 import { generateOpenClaw } from "./openclaw.js";
 
 const GENERATORS: Record<AgentTarget, (opts: IntegrationOptions) => IntegrationOutput> = {
+  pi: generatePi,
   "claude-code": generateClaudeCode,
   cursor: generateCursor,
   windsurf: generateWindsurf,

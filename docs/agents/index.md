@@ -6,6 +6,7 @@ KCP Harness works with any MCP-capable AI agent. Each agent has its own config f
 
 | Agent | Config File | Rules File | Notes |
 |---|---|---|---|
+| Pi | `.pi/mcp.json` | `.pi/skills/kcp-harness/SKILL.md` | Project-local MCP and Agent Skills |
 | [Claude Code](./claude-code) | `.mcp.json` | `CLAUDE.md` + hooks | PreToolUse hooks block ungoverned reads |
 | [Cursor](./cursor) | `.cursor/mcp.json` | `.cursor/rules/*.mdc` | Glob-scoped rules with YAML frontmatter |
 | [GitHub Copilot](./copilot) | `.vscode/mcp.json` | `.github/copilot-instructions.md` | Uses `"servers"` key (not `"mcpServers"`) |
@@ -20,6 +21,7 @@ KCP Harness works with any MCP-capable AI agent. Each agent has its own config f
 ```bash
 # Generate integration files for your agent
 kcp-harness integrate claude-code
+kcp-harness integrate pi
 kcp-harness integrate cursor
 kcp-harness integrate copilot
 
