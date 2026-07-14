@@ -2,6 +2,7 @@
 
 /** Supported agent targets for integration generation. */
 export type AgentTarget =
+  | "pi"
   | "claude-code"
   | "cursor"
   | "windsurf"
@@ -65,6 +66,15 @@ export interface AgentInfo {
 
 /** Registry of all supported agents. */
 export const AGENTS: Record<AgentTarget, AgentInfo> = {
+  pi: {
+    target: "pi",
+    name: "Pi",
+    mcpSupport: true,
+    configFile: ".pi/mcp.json",
+    rulesFile: ".pi/skills/kcp-harness/SKILL.md",
+    topLevelKey: "mcpServers",
+    notes: "Project-local MCP config plus Agent Skills guidance",
+  },
   "claude-code": {
     target: "claude-code",
     name: "Claude Code",

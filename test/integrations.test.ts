@@ -12,6 +12,7 @@ describe("integration generators", () => {
     it("returns all agent targets", () => {
       const agents = listAgents();
       expect(agents.length).toBeGreaterThanOrEqual(9);
+      expect(agents).toContain("pi");
       expect(agents).toContain("claude-code");
       expect(agents).toContain("cursor");
       expect(agents).toContain("windsurf");
@@ -62,6 +63,21 @@ describe("integration generators", () => {
   });
 
   // -- Agent-specific tests --
+
+  describe("pi", () => {
+    it("produces lazy .pi/mcp.json and an agent skill", () => {
+      const out = generate("pi", DEFAULT_OPTS);
+      const mcpFile = out.files.find((f) => f.path === ".pi/mcp.json");
+      const skill = out.files.find((f) => f.path === ".pi/skills/kcp-harness/SKILL.md");
+      expect(mcpFile).toBeDefined();
+      expect(skill).toBeDefined();
+      const parsed = JSON.parse(mcpFile!.content);
+      expect(parsed.settings.directTools).toBe(false);
+      expect(parsed.mcpServers["kcp-harness"].lifecycle).toBe("lazy");
+      expect(skill!.content).toContain("kcp_plan");
+      expect(skill!.content).toContain("kcp_load");
+    });
+  });
 
   describe("claude-code", () => {
     it("produces .mcp.json with mcpServers key", () => {

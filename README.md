@@ -88,7 +88,7 @@ kcp-harness init          # creates harness.yaml
 ### 2. Generate agent integration
 
 ```bash
-kcp-harness integrate claude-code    # or: cursor, copilot, windsurf, cline, continue, crush, openclaw
+kcp-harness integrate claude-code    # or: pi, cursor, copilot, windsurf, cline, continue, crush, openclaw
 ```
 
 ### 3. Start coding
@@ -107,6 +107,7 @@ Your agent now routes knowledge access through the harness. Every decision is lo
 | **Continue** | `.continue/mcpServers/*.yaml` | `kcp-harness integrate continue` |
 | **Crush** | `crush.json` + PrepareStep | `kcp-harness integrate crush` |
 | **OpenClaw** | `openclaw.json` + plugin hooks | `kcp-harness integrate openclaw` |
+| **Pi** | `.pi/mcp.json` + project skills | `kcp-harness integrate pi` |
 
 Each agent has its own MCP config format, rules file, and quirks. The `integrate` command handles
 them all — one governance layer, any agent.
