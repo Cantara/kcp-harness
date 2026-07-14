@@ -1,6 +1,6 @@
 {
   "name": "kcp-harness",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "mcpName": "no.cantara/kcp-harness",
   "description": "KCP Compliance Harness — MCP proxy that enforces deterministic knowledge governance for any agent",
   "type": "module",
@@ -25,7 +25,7 @@
   },
   "dependencies": {
     "js-yaml": "^4.1.0",
-    "kcp-agent": "^0.11.0"
+    "kcp-agent": "^0.13.0"
   },
   "devDependencies": {
     "@types/js-yaml": "^4.0.9",
