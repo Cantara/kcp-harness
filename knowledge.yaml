@@ -135,3 +135,17 @@ units:
     scope: module
     audience: [agent, human]
     triggers: [compliance, export, soc2, iso27001, evidence, demo]
+
+signing:
+  scheme: ed25519
+  scope: this-manifest
+  public_key: "MCowBQYDK2VwAyEAuipgusnqU9vjf3p2yPVLD/DmERT6tBbLOqEETdxAhMU="
+  signature: "https://raw.githubusercontent.com/Cantara/kcp-harness/main/knowledge.yaml.sig"
+
+# Serving Endpoint Binding (KCP SPEC v0.26 §3.12): authoritative manifest URL
+# and authorized MCP representative. Ignored by pre-0.26 verifiers.
+serving:
+  manifest:
+    - https://raw.githubusercontent.com/Cantara/kcp-harness/main/knowledge.yaml
+  mcp:
+    - https://mcp.cantara.no/mcp
