@@ -59,6 +59,12 @@ export interface AuditConfig {
   path: string;
 }
 
+/** Optional dashboard telemetry sink for decision traces. */
+export interface DashboardConfig {
+  /** Full URL of the kcp-dashboard /trace endpoint (e.g. http://localhost:7734/trace). */
+  url?: string;
+}
+
 /** Top-level harness configuration. */
 export interface HarnessConfig {
   version: string;
@@ -68,6 +74,8 @@ export interface HarnessConfig {
   };
   downstream: DownstreamConfig[];
   audit: AuditConfig;
+  /** Opt-in decision-trace telemetry sink (absent = disabled). */
+  dashboard?: DashboardConfig;
 }
 
 /** Default governance policy. */
@@ -99,13 +107,21 @@ export function parseConfig(text: string): HarnessConfig {
   const policy = parsePolicy(governance?.["policy"]);
   const downstream = parseDownstream(raw["downstream"]);
   const audit = parseAudit(raw["audit"]);
+  const dashboard = parseDashboard(raw["dashboard"]);
 
   return {
     version: String(raw["version"] ?? "1.0"),
     governance: { domains, policy },
     downstream,
     audit,
+    ...(dashboard ? { dashboard } : {}),
   };
+}
+
+function parseDashboard(raw: unknown): DashboardConfig | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const d = raw as Record<string, unknown>;
+  return { url: d["url"] === undefined ? undefined : String(d["url"]) };
 }
 
 function parseDomains(raw: unknown): GovernedDomain[] {

@@ -29,6 +29,8 @@ import {
 import { createSession, nextSequence, type SessionState } from "./session.js";
 import { DownstreamManager, type McpTool } from "./downstream.js";
 import { callKcpTool } from "./kcp-bridge.js";
+import { toTraceEvent, emitTrace } from "./trace-emit.js";
+import type { DecisionTrace } from "kcp-agent";
 import type { BudgetCeiling } from "./budget-ledger.js";
 
 const HARNESS_VERSION = "0.1.0";
@@ -318,6 +320,8 @@ export class HarnessProxy {
         // KCP tool — delegate to kcp-agent via the bridge
         const text = await callKcpTool(toolName, args);
         result = { content: [{ type: "text", text }], isError: false };
+        // Opt-in, fail-open: ship the decision trace to the dashboard.
+        this.maybeEmitTrace(toolName, args, text);
       } else {
         // Downstream tool — forward to the owning downstream server
         result = await this.downstream.callTool(toolName, args);
@@ -362,6 +366,26 @@ export class HarnessProxy {
         content: [{ type: "text", text: `[kcp-harness] error: ${msg}` }],
         isError: true,
       });
+    }
+  }
+
+  /**
+   * Ship a decision trace to the dashboard when one is available (kcp_trace)
+   * and a dashboard URL is configured. Opt-in and fully fail-open — any error
+   * here is swallowed so telemetry never affects the tool result.
+   */
+  private maybeEmitTrace(toolName: string, args: Record<string, unknown>, text: string): void {
+    const url = this.config.dashboard?.url;
+    if (!url || toolName !== "kcp_trace") return;
+    try {
+      const trace = JSON.parse(text) as DecisionTrace;
+      emitTrace(url, toTraceEvent(trace, {
+        sessionId: this.session.id,
+        project: process.cwd(),
+        manifest: typeof args["manifest"] === "string" ? (args["manifest"] as string) : undefined,
+      }));
+    } catch {
+      /* fail-open: never let telemetry break governance */
     }
   }
 
