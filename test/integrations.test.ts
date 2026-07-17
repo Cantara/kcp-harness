@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { execFileSync } from "node:child_process";
 import { generate, generateAll, listAgents } from "../src/integrations/generate.js";
 import { AGENTS, type AgentTarget, type IntegrationOptions } from "../src/integrations/types.js";
 
@@ -103,6 +104,72 @@ describe("integration generators", () => {
       expect(settings).toBeDefined();
       const parsed = JSON.parse(settings!.content);
       expect(parsed.hooks?.PreToolUse).toBeDefined();
+    });
+
+    // The hook is the enforcement point for Claude Code's native file tools —
+    // they never reach the proxy, so a hook that cannot fire means no
+    // governance at all. Run the generated script the way Claude Code does:
+    // hook payload as JSON on stdin, decision read back off stdout.
+    describe("generated PreToolUse hook", () => {
+      const runHook = (payload: unknown) => {
+        const out = generate("claude-code", DEFAULT_OPTS);
+        const settings = out.files.find((f) => f.path.includes("settings"))!;
+        const hook = JSON.parse(settings.content).hooks.PreToolUse[0].hooks[0];
+        const stdout = execFileSync(hook.command, hook.args, {
+          input: JSON.stringify(payload),
+          encoding: "utf-8",
+        });
+        return stdout.trim() ? JSON.parse(stdout) : null;
+      };
+
+      const denial = (result: any) => result?.hookSpecificOutput?.permissionDecision;
+
+      it("denies a read of a governed path", () => {
+        const result = runHook({
+          hook_event_name: "PreToolUse",
+          tool_name: "Read",
+          tool_input: { file_path: "docs/api.md" },
+        });
+        expect(denial(result)).toBe("deny");
+        expect(result.hookSpecificOutput.permissionDecisionReason).toContain("kcp_load");
+      });
+
+      it("allows a read of an ungoverned path", () => {
+        const result = runHook({
+          hook_event_name: "PreToolUse",
+          tool_name: "Read",
+          tool_input: { file_path: "package.json" },
+        });
+        expect(result).toBeNull();
+      });
+
+      it("denies a governed path nested under a parent directory", () => {
+        const result = runHook({
+          hook_event_name: "PreToolUse",
+          tool_name: "Read",
+          tool_input: { file_path: "/repo/fragments/notes.md" },
+        });
+        expect(denial(result)).toBe("deny");
+      });
+
+      it("reads the target from tool_input, not the environment", () => {
+        // Regression: the hook used to read process.env.TOOL_INPUT, which
+        // Claude Code never sets — so every governed read was allowed through.
+        const out = generate("claude-code", DEFAULT_OPTS);
+        const settings = out.files.find((f) => f.path.includes("settings"))!;
+        expect(settings.content).not.toContain("TOOL_INPUT");
+      });
+
+      it("fails closed when the payload cannot be parsed", () => {
+        const out = generate("claude-code", DEFAULT_OPTS);
+        const settings = out.files.find((f) => f.path.includes("settings"))!;
+        const hook = JSON.parse(settings.content).hooks.PreToolUse[0].hooks[0];
+        const stdout = execFileSync(hook.command, hook.args, {
+          input: "not json",
+          encoding: "utf-8",
+        });
+        expect(denial(JSON.parse(stdout))).toBe("deny");
+      });
     });
   });
 

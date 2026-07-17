@@ -36,13 +36,35 @@ export function generateClaudeCode(options: IntegrationOptions): IntegrationOutp
                   type: "command",
                   command: "node",
                   args: ["-e", `
-const args = JSON.parse(process.env.TOOL_INPUT || '{}');
-const path = args.file_path || args.path || '';
-const governed = ${JSON.stringify(paths)}.some(p => path.startsWith(p) || path.includes('/' + p));
-if (governed) {
-  console.log(JSON.stringify({ decision: "block", reason: "Use kcp_load to access governed knowledge at " + path }));
-  process.exit(2);
-}
+const deny = (reason) => {
+  console.log(JSON.stringify({
+    hookSpecificOutput: {
+      hookEventName: "PreToolUse",
+      permissionDecision: "deny",
+      permissionDecisionReason: reason,
+    },
+  }));
+  process.exit(0);
+};
+let raw = "";
+process.stdin.on("data", (d) => { raw += d; });
+process.stdin.on("end", () => {
+  let input;
+  try {
+    input = JSON.parse(raw);
+  } catch {
+    // Fail-closed: an unreadable payload means we cannot prove the target is
+    // ungoverned, so we must not let it through.
+    deny("kcp-harness: could not parse PreToolUse input — failing closed");
+    return;
+  }
+  const args = input.tool_input || {};
+  const path = args.file_path || args.path || '';
+  const governed = ${JSON.stringify(paths)}.some(p => path.startsWith(p) || path.includes('/' + p));
+  if (governed) {
+    deny("Use kcp_load to access governed knowledge at " + path);
+  }
+});
                   `.trim()],
                 },
               ],
