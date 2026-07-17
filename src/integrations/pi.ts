@@ -31,6 +31,13 @@ description: Use the kcp-harness MCP proxy for governed project knowledge. Load 
 
 This project uses kcp-harness to govern knowledge access through \`knowledge.yaml\`.
 
+## Prerequisite: an MCP client extension
+
+Stock Pi has no built-in MCP client, so \`.pi/mcp.json\` is inert until an MCP
+client extension (for example \`pi-mcp-adapter\`) is installed. If the
+\`kcp_plan\`/\`kcp_load\` tools are not available in this session, tell the
+operator to install one — do not fall back to direct reads of governed paths.
+
 ## Governed paths
 
 ${governedPathsBlock(options)}
@@ -58,6 +65,11 @@ The harness owns governance. This skill teaches the agent how to use it; it does
 1. The .pi/mcp.json registers kcp-harness as a lazy MCP server.
 2. The .pi/skills/kcp-harness/SKILL.md teaches Pi to call kcp_plan and kcp_load for governed knowledge.
 3. Keep directTools disabled by default to avoid flattening the provider's full tool surface.
+
+Prerequisite: stock Pi ships without an MCP client — .pi/mcp.json takes effect
+only once an MCP client extension such as pi-mcp-adapter is installed
+(\`pi install npm:pi-mcp-adapter\`). The skill still loads either way from
+.pi/skills/ after the project is trusted.
 
 Review generated files before committing them. Regenerate with \`--dry-run\` to inspect output without writing.
 `,
