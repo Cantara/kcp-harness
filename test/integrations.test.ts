@@ -77,6 +77,13 @@ describe("integration generators", () => {
       expect(skill!.content).toContain("kcp_plan");
       expect(skill!.content).toContain("kcp_load");
     });
+
+    it("states the MCP client prerequisite — stock Pi has no MCP", () => {
+      const out = generate("pi", DEFAULT_OPTS);
+      const skill = out.files.find((f) => f.path === ".pi/skills/kcp-harness/SKILL.md");
+      expect(skill!.content).toContain("pi-mcp-adapter");
+      expect(out.instructions).toContain("pi install npm:pi-mcp-adapter");
+    });
   });
 
   describe("claude-code", () => {
