@@ -19,6 +19,8 @@ import { generate, generateAll, listAgents } from "./integrations/generate.js";
 import type { IntegrationOptions } from "./integrations/types.js";
 import { exportEvidence } from "./export.js";
 import { DashboardServer } from "./dashboard/server.js";
+import { runApprovals } from "./approvals-cli.js";
+import { AuditLog } from "./audit.js";
 
 const USAGE = `kcp-harness — KCP Compliance Harness
 
@@ -30,6 +32,9 @@ Usage:
   kcp-harness integrate --list                  List supported agents
   kcp-harness export   [options]               Export compliance evidence
   kcp-harness dashboard [options]              Launch compliance dashboard
+  kcp-harness approvals list [--state s]        List human-approval tickets
+  kcp-harness approvals approve <id> --reviewer <name> --policy-ref <ref> [--note n]
+  kcp-harness approvals dismiss <id> --reviewer <name> --policy-ref <ref> [--note n]
   kcp-harness --version                        Show version
   kcp-harness --help                           Show this help
 
@@ -70,6 +75,17 @@ governance:
     # signature_required: true
     # trusted_keys:
     #   - "./keys/manifest-key.pem"
+
+  # Human-approval gates — calls matching a rule are held for a named
+  # reviewer (resolve with: kcp-harness approvals approve <id> ...)
+  # approvals:
+  #   provider: file
+  #   dir: .kcp-harness/approvals
+  #   rules:
+  #     - match: { tools: [Write, Edit], paths: [records/] }
+  #       required_role: account-owner
+  #       expires_after: 72h
+  #       policy_ref: POL-7.2
 
 downstream:
   # - name: "filesystem"
@@ -246,6 +262,24 @@ async function main(): Promise<void> {
       };
       process.on("SIGINT", shutdown);
       process.on("SIGTERM", shutdown);
+      break;
+    }
+
+    case "approvals": {
+      if (!existsSync(configPath)) {
+        process.stderr.write(`[kcp-harness] config not found: ${configPath}\n`);
+        process.exit(1);
+      }
+      try {
+        const config = loadConfig(configPath);
+        const audit = new AuditLog(config.audit.path);
+        const out = await runApprovals(args.slice(1), config, audit);
+        process.stdout.write(out);
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        process.stderr.write(`[kcp-harness] approvals error: ${msg}\n`);
+        process.exit(1);
+      }
       break;
     }
 

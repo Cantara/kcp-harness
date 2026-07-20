@@ -31,18 +31,34 @@ import {
   type FollowOptions,
   type SignatureResult,
 } from "kcp-agent";
-import type { GovernancePolicy, GovernedDomain } from "./config.js";
+import type { GovernancePolicy, GovernedDomain, ApprovalRule } from "./config.js";
 import type { Classification } from "./classifier.js";
+import { matchesPrefix } from "./classifier.js";
 import type { SessionState, ApprovedPlan } from "./session.js";
 import { isPathApproved, addPlan, recordSpend } from "./session.js";
 import type { SpendResult } from "./budget-ledger.js";
+import {
+  latestForCall,
+  newRequest,
+  parseDuration,
+  type ApprovalProvider,
+  type ApprovalResolution,
+} from "./approval.js";
+
+/** Approval wiring the proxy hands to the governor: the store + the rules. */
+export interface ApprovalContext {
+  provider: ApprovalProvider;
+  rules: ApprovalRule[];
+}
 
 /** The governor's decision for a tool call. */
 export interface GovernanceDecision {
   /** Whether the tool call is approved. */
   approved: boolean;
   /** How the decision was made. */
-  mode: "plan-first" | "auto-plan" | "kcp-passthrough" | "blocked";
+  mode: "plan-first" | "auto-plan" | "kcp-passthrough" | "blocked"
+    | "pending"          // awaiting a named human — approved stays false (fail-closed)
+    | "human-approved";  // a named human resolved it — resolution attached
   /** The plan that governs this decision (if any). */
   plan?: AgentPlan;
   /** The decision trace (if tracing is enabled). */
@@ -55,6 +71,12 @@ export interface GovernanceDecision {
   budgetSpend?: SpendResult;
   /** Manifest signature verification result (when signature checking is active). */
   signature?: SignatureResult;
+  /** Ticket id, when mode is "pending". */
+  pendingId?: string;
+  /** True when this call opened a new ticket (the proxy audits approval_requested). */
+  submitted?: boolean;
+  /** The named human's resolution, when mode is "human-approved". */
+  resolution?: ApprovalResolution;
 }
 
 /**
@@ -74,6 +96,7 @@ export async function govern(
   args: Record<string, unknown>,
   session: SessionState,
   policy: GovernancePolicy,
+  approvals?: ApprovalContext,
 ): Promise<GovernanceDecision> {
   // KCP tools pass through — they ARE the governance layer
   if (toolName.startsWith("kcp_")) {
@@ -86,6 +109,22 @@ export async function govern(
 
   const domain = classification.domain;
   const target = classification.target;
+
+  // Mode 0: human-approval rules outrank every automated path. A matched
+  // rule means a named human decides — an approved plan must not bypass it.
+  if (approvals) {
+    const rule = approvals.rules.find((r) => ruleMatches(r, toolName, target));
+    if (rule) {
+      try {
+        return await governByApproval(rule, toolName, target ?? "", session, domain, approvals.provider);
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        // Fail-closed: if the approval store is unreachable we cannot prove
+        // a human signed off, so the call is blocked.
+        return { approved: false, mode: "blocked", reason: `approval check failed (fail-closed): ${msg}` };
+      }
+    }
+  }
 
   // Mode 1: check existing approved plans
   if (target) {
@@ -129,6 +168,93 @@ export async function govern(
     approved: false,
     mode: "blocked",
     reason: `governed tool call with no extractable target — blocked by policy`,
+  };
+}
+
+/** Does an approval rule apply to this call? Present criteria AND together. */
+function ruleMatches(rule: ApprovalRule, toolName: string, target: string | undefined): boolean {
+  if (rule.match.tools && !rule.match.tools.includes(toolName)) return false;
+  if (rule.match.paths) {
+    if (!target) return false;
+    if (!rule.match.paths.some((p) => matchesPrefix(target, p))) return false;
+  }
+  return true;
+}
+
+/**
+ * Decide a rule-matched call from the approval store:
+ * approved → allow with the resolution attached; pending → wait;
+ * dismissed → terminal block; expired or absent → open a fresh ticket.
+ */
+async function governByApproval(
+  rule: ApprovalRule,
+  toolName: string,
+  target: string,
+  session: SessionState,
+  domain: GovernedDomain,
+  provider: ApprovalProvider,
+): Promise<GovernanceDecision> {
+  const existing = await latestForCall(provider, target, toolName);
+
+  if (existing?.state === "approved" && existing.resolution) {
+    return {
+      approved: true,
+      mode: "human-approved",
+      resolution: existing.resolution,
+      reason:
+        `approved by ${existing.resolution.reviewer} at ${existing.resolution.reviewedAt} ` +
+        `(${existing.resolution.policyRef}) — ticket ${existing.request.id}`,
+    };
+  }
+
+  if (existing?.state === "pending_review") {
+    return {
+      approved: false,
+      mode: "pending",
+      pendingId: existing.request.id,
+      reason:
+        `pending approval ${existing.request.id} from role ${existing.request.requiredRole} — ` +
+        `re-try after approval or check harness_approvals`,
+    };
+  }
+
+  if (existing?.state === "dismissed" && existing.resolution) {
+    return {
+      approved: false,
+      mode: "blocked",
+      reason:
+        `dismissed by ${existing.resolution.reviewer}` +
+        `${existing.resolution.note ? `: ${existing.resolution.note}` : ""} — ticket ${existing.request.id}`,
+    };
+  }
+
+  // No usable ticket (none yet, or the last one expired) → open a fresh one.
+  const request = newRequest({
+    sessionId: session.id,
+    toolName,
+    target,
+    task: `${toolName} ${target}`.trim(),
+    requiredRole: rule.required_role,
+    expiresAt: rule.expires_after
+      ? new Date(Date.now() + parseDuration(rule.expires_after)).toISOString()
+      : undefined,
+    evidence: {
+      manifest: domain.manifest,
+      policyRef: rule.policy_ref,
+      detail: existing?.state === "expired" ? `previous ticket ${existing.request.id} expired` : undefined,
+    },
+  });
+  await provider.submit(request);
+
+  return {
+    approved: false,
+    mode: "pending",
+    pendingId: request.id,
+    submitted: true,
+    reason:
+      `pending approval ${request.id} from role ${rule.required_role}` +
+      `${rule.policy_ref ? ` (${rule.policy_ref})` : ""} — ` +
+      `re-try after approval or check harness_approvals`,
   };
 }
 

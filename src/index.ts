@@ -19,7 +19,24 @@ export {
 export {
   govern,
   type GovernanceDecision,
+  type ApprovalContext,
 } from "./governor.js";
+
+export {
+  InMemoryApprovalProvider,
+  FileApprovalProvider,
+  providerFromConfig,
+  newRequest,
+  parseDuration,
+  latestForCall,
+  type ApprovalProvider,
+  type ApprovalRequest,
+  type ApprovalResolution,
+  type ApprovalStatus,
+  type ApprovalState,
+} from "./approval.js";
+
+export { runApprovals } from "./approvals-cli.js";
 
 export {
   AuditLog,
@@ -28,6 +45,7 @@ export {
   buildLifecycleEvent,
   buildBudgetEvent,
   buildDriftEvent,
+  buildApprovalEvent,
   type AuditWriter,
   type AuditEvent,
   type AuditEventType,
@@ -62,11 +80,14 @@ export {
   parseConfig,
   DEFAULT_POLICY,
   DEFAULT_AUDIT,
+  DEFAULT_APPROVALS_DIR,
   type HarnessConfig,
   type GovernedDomain,
   type GovernancePolicy,
   type DownstreamConfig,
   type AuditConfig,
+  type ApprovalRule,
+  type ApprovalsConfig,
 } from "./config.js";
 
 export { callKcpTool } from "./kcp-bridge.js";

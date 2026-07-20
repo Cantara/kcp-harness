@@ -41,6 +41,36 @@ export interface GovernancePolicy {
   trusted_keys?: string[];
 }
 
+/** A rule demanding human approval for matching governed calls. */
+export interface ApprovalRule {
+  /** What the rule applies to. Absent criteria match everything; present criteria AND together. */
+  match: {
+    /** Tool names (exact), e.g. [Write, Edit]. */
+    tools?: string[];
+    /** Path prefixes, matched like governed-domain paths. */
+    paths?: string[];
+  };
+  /** Role that must approve (recorded on the ticket; enforcement is channel-side). */
+  required_role: string;
+  /** TTL after which an unresolved ticket expires ("30m", "72h", "7d"). */
+  expires_after?: string;
+  /** Policy/regulatory citation this rule enforces — carried as ticket evidence. */
+  policy_ref?: string;
+}
+
+/** Human-approval configuration — org policy, deliberately not manifest data. */
+export interface ApprovalsConfig {
+  /** Ticket store: "file" (persisted, default) or "memory" (ephemeral). */
+  provider: "file" | "memory";
+  /** Directory for the file provider's store (default: .kcp-harness/approvals). */
+  dir?: string;
+  /** Rules evaluated before any automated governance path. */
+  rules: ApprovalRule[];
+}
+
+/** Default approvals store directory. */
+export const DEFAULT_APPROVALS_DIR = ".kcp-harness/approvals";
+
 /** A downstream MCP server to proxy tool calls to. */
 export interface DownstreamConfig {
   /** Human-readable name for this downstream server. */
@@ -71,6 +101,8 @@ export interface HarnessConfig {
   governance: {
     domains: GovernedDomain[];
     policy: GovernancePolicy;
+    /** Human-approval gates (absent = no approval rules). */
+    approvals?: ApprovalsConfig;
   };
   downstream: DownstreamConfig[];
   audit: AuditConfig;
@@ -105,13 +137,14 @@ export function parseConfig(text: string): HarnessConfig {
   const governance = raw["governance"] as Record<string, unknown> | undefined;
   const domains = parseDomains(governance?.["domains"]);
   const policy = parsePolicy(governance?.["policy"]);
+  const approvals = parseApprovals(governance?.["approvals"]);
   const downstream = parseDownstream(raw["downstream"]);
   const audit = parseAudit(raw["audit"]);
   const dashboard = parseDashboard(raw["dashboard"]);
 
   return {
     version: String(raw["version"] ?? "1.0"),
-    governance: { domains, policy },
+    governance: { domains, policy, ...(approvals ? { approvals } : {}) },
     downstream,
     audit,
     ...(dashboard ? { dashboard } : {}),
@@ -122,6 +155,34 @@ function parseDashboard(raw: unknown): DashboardConfig | undefined {
   if (!raw || typeof raw !== "object") return undefined;
   const d = raw as Record<string, unknown>;
   return { url: d["url"] === undefined ? undefined : String(d["url"]) };
+}
+
+function parseApprovals(raw: unknown): ApprovalsConfig | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const a = raw as Record<string, unknown>;
+  const rules = Array.isArray(a["rules"]) ? a["rules"].map(parseApprovalRule) : [];
+  return {
+    provider: a["provider"] === "memory" ? "memory" : "file",
+    dir: a["dir"] === undefined ? undefined : String(a["dir"]),
+    rules,
+  };
+}
+
+function parseApprovalRule(raw: Record<string, unknown>): ApprovalRule {
+  const requiredRole = raw["required_role"];
+  if (!requiredRole || typeof requiredRole !== "string") {
+    throw new Error("approval rule requires required_role — an approval nobody is named to give cannot resolve");
+  }
+  const match = (raw["match"] ?? {}) as Record<string, unknown>;
+  return {
+    match: {
+      tools: Array.isArray(match["tools"]) ? match["tools"].map(String) : undefined,
+      paths: Array.isArray(match["paths"]) ? match["paths"].map(String) : undefined,
+    },
+    required_role: requiredRole,
+    expires_after: raw["expires_after"] === undefined ? undefined : String(raw["expires_after"]),
+    policy_ref: raw["policy_ref"] === undefined ? undefined : String(raw["policy_ref"]),
+  };
 }
 
 function parseDomains(raw: unknown): GovernedDomain[] {

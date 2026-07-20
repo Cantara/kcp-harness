@@ -20,6 +20,7 @@ import type { Classification } from "./classifier.js";
 import type { GovernanceDecision } from "./governor.js";
 import type { LedgerSnapshot } from "./budget-ledger.js";
 import type { DriftResult } from "./temporal-watch.js";
+import type { ApprovalStatus } from "./approval.js";
 
 /** Event types for structured audit logging. */
 export type AuditEventType =
@@ -29,7 +30,9 @@ export type AuditEventType =
   | "budget_spend"       // Budget ledger: spend recorded
   | "budget_exceeded"    // Budget ledger: spend rejected (ceiling)
   | "temporal_drift"     // Temporal watch: plan drift detected
-  | "plan_invalidated";  // Temporal watch: plan invalidated due to drift
+  | "plan_invalidated"   // Temporal watch: plan invalidated due to drift
+  | "approval_requested" // Human approval: ticket opened
+  | "approval_resolved"; // Human approval: named reviewer approved/dismissed
 
 /** A single audit event. */
 export interface AuditEvent {
@@ -68,6 +71,20 @@ export interface AuditEvent {
   };
   /** Manifest signature verification result. */
   signature?: SignatureResult;
+  /** Approval ticket details (for approval_requested / approval_resolved events). */
+  approval?: {
+    id: string;
+    state: string;
+    toolName?: string;
+    target?: string;
+    requiredRole?: string;
+    /** Policy citation — from the rule at request time, from the reviewer at resolution time. */
+    policyRef?: string;
+    reviewer?: string;
+    reviewedAt?: string;
+    note?: string;
+    expiresAt?: string;
+  };
 }
 
 /** Append-only audit log writer. */
@@ -175,6 +192,36 @@ export function buildBudgetEvent(
     durationMs: 0,
     budget: snapshot,
     ...(details ? { toolCall: { name: accepted ? "budget_spend" : "budget_exceeded", args: details } } : {}),
+  };
+}
+
+/** Build a human-approval lifecycle event from a ticket's current status. */
+export function buildApprovalEvent(
+  sessionId: string,
+  sequence: number,
+  type: "approval_requested" | "approval_resolved",
+  status: ApprovalStatus,
+): AuditEvent {
+  return {
+    timestamp: new Date().toISOString(),
+    sessionId,
+    sequence,
+    type,
+    // A request is not yet an outcome; a resolution's outcome follows the reviewer.
+    outcome: status.state === "approved" ? "approved" : "blocked",
+    durationMs: 0,
+    approval: {
+      id: status.request.id,
+      state: status.state,
+      toolName: status.request.toolName,
+      target: status.request.target,
+      requiredRole: status.request.requiredRole,
+      policyRef: status.resolution?.policyRef ?? status.request.evidence.policyRef,
+      reviewer: status.resolution?.reviewer,
+      reviewedAt: status.resolution?.reviewedAt,
+      note: status.resolution?.note,
+      expiresAt: status.request.expiresAt,
+    },
   };
 }
 

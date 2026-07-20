@@ -15,7 +15,8 @@
 import { createInterface } from "node:readline";
 import type { HarnessConfig } from "./config.js";
 import { classify } from "./classifier.js";
-import { govern, type GovernanceDecision } from "./governor.js";
+import { govern, type GovernanceDecision, type ApprovalContext } from "./governor.js";
+import { providerFromConfig, type ApprovalProvider } from "./approval.js";
 import {
   AuditLog,
   InMemoryAuditLog,
@@ -23,6 +24,7 @@ import {
   buildLifecycleEvent,
   buildBudgetEvent,
   buildDriftEvent,
+  buildApprovalEvent,
   type AuditWriter,
   type AuditEvent,
 } from "./audit.js";
@@ -85,6 +87,21 @@ const HARNESS_TOOLS: McpTool[] = [
       "time and report any plans that would produce different results now.",
     inputSchema: { type: "object", properties: {} },
   },
+  {
+    name: "harness_approvals",
+    description:
+      "List human-approval tickets: calls held for a named reviewer. " +
+      "A pending call is denied with its ticket id — re-try it after approval.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        state: {
+          type: "string",
+          description: "Filter by state: pending_review, approved, dismissed, expired",
+        },
+      },
+    },
+  },
 ];
 
 /** KCP tool names that the harness routes to kcp-agent directly. */
@@ -102,11 +119,20 @@ export class HarnessProxy {
   private readonly downstream: DownstreamManager;
   private readonly audit: AuditWriter;
   private readonly session: SessionState;
+  private readonly approvals?: ApprovalContext;
 
   constructor(options: ProxyOptions) {
     this.config = options.config;
     this.downstream = new DownstreamManager();
     this.audit = options.audit ?? new AuditLog(options.config.audit.path);
+
+    const approvalsConfig = options.config.governance.approvals;
+    if (approvalsConfig) {
+      this.approvals = {
+        provider: providerFromConfig(approvalsConfig),
+        rules: approvalsConfig.rules,
+      };
+    }
 
     // Derive budget ceiling from policy
     const policy = options.config.governance.policy;
@@ -282,7 +308,18 @@ export class HarnessProxy {
           args,
           this.session,
           this.config.governance.policy,
+          this.approvals,
         );
+
+        // A freshly opened ticket is its own audit event
+        if (governance.submitted && governance.pendingId && this.approvals) {
+          const status = await this.approvals.provider.check(governance.pendingId);
+          if (status) {
+            this.audit.emit(
+              buildApprovalEvent(this.session.id, nextSequence(this.session), "approval_requested", status),
+            );
+          }
+        }
 
         if (!governance.approved) {
           // Blocked — emit audit and return error
@@ -492,6 +529,40 @@ export class HarnessProxy {
         };
       }
 
+      case "harness_approvals": {
+        if (!this.approvals) {
+          return {
+            content: [{ type: "text", text: "no approval rules configured — see governance.approvals in harness.yaml" }],
+            isError: false,
+          };
+        }
+        const stateFilter = typeof _args["state"] === "string" ? (_args["state"] as string) : undefined;
+        const statuses = await this.approvals.provider.list(
+          stateFilter ? { state: stateFilter as never } : undefined,
+        );
+        return {
+          content: [{
+            type: "text",
+            text: JSON.stringify({
+              approvals: statuses.map((s) => ({
+                id: s.request.id,
+                state: s.state,
+                toolName: s.request.toolName,
+                target: s.request.target,
+                requiredRole: s.request.requiredRole,
+                requestedAt: s.request.requestedAt,
+                expiresAt: s.request.expiresAt,
+                policyRef: s.resolution?.policyRef ?? s.request.evidence.policyRef,
+                reviewer: s.resolution?.reviewer,
+                reviewedAt: s.resolution?.reviewedAt,
+                note: s.resolution?.note,
+              })),
+            }, null, 2),
+          }],
+          isError: false,
+        };
+      }
+
       default:
         return {
           content: [{ type: "text", text: `unknown harness tool: ${name}` }],
@@ -503,6 +574,11 @@ export class HarnessProxy {
   /** Expose session for testing. */
   getSession(): SessionState {
     return this.session;
+  }
+
+  /** Expose the approval ticket store (for testing and embedding). */
+  getApprovalProvider(): ApprovalProvider | undefined {
+    return this.approvals?.provider;
   }
 }
 
