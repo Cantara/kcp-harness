@@ -177,6 +177,69 @@ describe("integration generators", () => {
         });
         expect(denial(JSON.parse(stdout))).toBe("deny");
       });
+
+      // Red-team (issue #25): the hook is a best-effort string check, so it
+      // must cover the ways an agent can reach a governed path other than a
+      // plain Read — Bash, Glob/Grep patterns, case variants, backslashes —
+      // mirroring src/classifier.ts. Each of these used to slip through.
+      it("includes Bash in the matcher", () => {
+        const out = generate("claude-code", DEFAULT_OPTS);
+        const settings = out.files.find((f) => f.path.includes("settings"))!;
+        expect(JSON.parse(settings.content).hooks.PreToolUse[0].matcher).toContain("Bash");
+      });
+
+      it("denies a Bash command that reads a governed path", () => {
+        const result = runHook({
+          tool_name: "Bash",
+          tool_input: { command: "cat docs/api.md" },
+        });
+        expect(denial(result)).toBe("deny");
+      });
+
+      it("denies a Bash redirect that writes into a governed path", () => {
+        const result = runHook({
+          tool_name: "Bash",
+          tool_input: { command: "echo hi > docs/out.md" },
+        });
+        expect(denial(result)).toBe("deny");
+      });
+
+      it("denies a Glob pattern that targets a governed directory", () => {
+        const result = runHook({
+          tool_name: "Glob",
+          tool_input: { pattern: "docs/**/*.md" },
+        });
+        expect(denial(result)).toBe("deny");
+      });
+
+      it("denies a Grep scoped to a governed path", () => {
+        const result = runHook({
+          tool_name: "Grep",
+          tool_input: { pattern: "SECRET", path: "docs" },
+        });
+        expect(denial(result)).toBe("deny");
+      });
+
+      it("denies a case-variant of a governed path", () => {
+        const result = runHook({
+          tool_name: "Read",
+          tool_input: { file_path: "Docs/api.md" },
+        });
+        expect(denial(result)).toBe("deny");
+      });
+
+      it("denies a backslash-separated governed path", () => {
+        const result = runHook({
+          tool_name: "Read",
+          tool_input: { file_path: "docs\\api.md" },
+        });
+        expect(denial(result)).toBe("deny");
+      });
+
+      it("does not over-block ungoverned Bash commands", () => {
+        expect(runHook({ tool_name: "Bash", tool_input: { command: "npm test" } })).toBeNull();
+        expect(runHook({ tool_name: "Bash", tool_input: { command: "git log docs/" } })).toBeNull();
+      });
     });
   });
 
