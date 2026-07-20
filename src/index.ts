@@ -46,6 +46,7 @@ export {
   buildBudgetEvent,
   buildDriftEvent,
   buildApprovalEvent,
+  buildConfidenceEvent,
   type AuditWriter,
   type AuditEvent,
   type AuditEventType,
@@ -88,6 +89,7 @@ export {
   type AuditConfig,
   type ApprovalRule,
   type ApprovalsConfig,
+  type ConfidenceConfig,
 } from "./config.js";
 
 export { callKcpTool } from "./kcp-bridge.js";

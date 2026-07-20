@@ -32,7 +32,8 @@ export type AuditEventType =
   | "temporal_drift"     // Temporal watch: plan drift detected
   | "plan_invalidated"   // Temporal watch: plan invalidated due to drift
   | "approval_requested" // Human approval: ticket opened
-  | "approval_resolved"; // Human approval: named reviewer approved/dismissed
+  | "approval_resolved"  // Human approval: named reviewer approved/dismissed
+  | "confidence_verdict"; // Confidence gate: harness_assess adjudicated an answer
 
 /** A single audit event. */
 export interface AuditEvent {
@@ -84,6 +85,17 @@ export interface AuditEvent {
     reviewedAt?: string;
     note?: string;
     expiresAt?: string;
+  };
+  /** Confidence verdict summary (for confidence_verdict events; no answer text). */
+  confidence?: {
+    task: string;
+    passed: boolean;
+    score: number;
+    threshold: number;
+    detail: string;
+    severity?: string;
+    /** Ticket opened for the failure, when routing applied. */
+    ticketId?: string;
   };
 }
 
@@ -221,6 +233,33 @@ export function buildApprovalEvent(
       reviewedAt: status.resolution?.reviewedAt,
       note: status.resolution?.note,
       expiresAt: status.request.expiresAt,
+    },
+  };
+}
+
+/** Build a confidence-gate event: the verdict, never the answer text. */
+export function buildConfidenceEvent(
+  sessionId: string,
+  sequence: number,
+  task: string,
+  verdict: { passed: boolean; score: number; threshold: number; detail: string; severity?: string },
+  ticketId?: string,
+): AuditEvent {
+  return {
+    timestamp: new Date().toISOString(),
+    sessionId,
+    sequence,
+    type: "confidence_verdict",
+    outcome: verdict.passed ? "approved" : "blocked",
+    durationMs: 0,
+    confidence: {
+      task,
+      passed: verdict.passed,
+      score: verdict.score,
+      threshold: verdict.threshold,
+      detail: verdict.detail,
+      severity: verdict.severity,
+      ticketId,
     },
   };
 }

@@ -71,6 +71,24 @@ export interface ApprovalsConfig {
 /** Default approvals store directory. */
 export const DEFAULT_APPROVALS_DIR = ".kcp-harness/approvals";
 
+/**
+ * Confidence-gate configuration for harness_assess — org policy for when a
+ * synthesized conclusion may be acted on (kcp-agent's assess() decides,
+ * the harness enforces).
+ */
+export interface ConfidenceConfig {
+  /** Pass/fail line, 0..1. A caller may tighten it, never loosen it. */
+  threshold: number;
+  /** Severity label recorded on verdicts (e.g. "critical"). */
+  severity?: string;
+  /** Route failed verdicts to this approval role (requires governance.approvals). */
+  route_to_role?: string;
+  /** TTL for routed tickets ("30m", "72h", "7d"). */
+  expires_after?: string;
+  /** Policy citation carried as ticket evidence. */
+  policy_ref?: string;
+}
+
 /** A downstream MCP server to proxy tool calls to. */
 export interface DownstreamConfig {
   /** Human-readable name for this downstream server. */
@@ -103,6 +121,8 @@ export interface HarnessConfig {
     policy: GovernancePolicy;
     /** Human-approval gates (absent = no approval rules). */
     approvals?: ApprovalsConfig;
+    /** Confidence gate for harness_assess (absent = caller must supply a threshold). */
+    confidence?: ConfidenceConfig;
   };
   downstream: DownstreamConfig[];
   audit: AuditConfig;
@@ -138,13 +158,19 @@ export function parseConfig(text: string): HarnessConfig {
   const domains = parseDomains(governance?.["domains"]);
   const policy = parsePolicy(governance?.["policy"]);
   const approvals = parseApprovals(governance?.["approvals"]);
+  const confidence = parseConfidence(governance?.["confidence"]);
   const downstream = parseDownstream(raw["downstream"]);
   const audit = parseAudit(raw["audit"]);
   const dashboard = parseDashboard(raw["dashboard"]);
 
   return {
     version: String(raw["version"] ?? "1.0"),
-    governance: { domains, policy, ...(approvals ? { approvals } : {}) },
+    governance: {
+      domains,
+      policy,
+      ...(approvals ? { approvals } : {}),
+      ...(confidence ? { confidence } : {}),
+    },
     downstream,
     audit,
     ...(dashboard ? { dashboard } : {}),
@@ -182,6 +208,22 @@ function parseApprovalRule(raw: Record<string, unknown>): ApprovalRule {
     required_role: requiredRole,
     expires_after: raw["expires_after"] === undefined ? undefined : String(raw["expires_after"]),
     policy_ref: raw["policy_ref"] === undefined ? undefined : String(raw["policy_ref"]),
+  };
+}
+
+function parseConfidence(raw: unknown): ConfidenceConfig | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const c = raw as Record<string, unknown>;
+  const threshold = Number(c["threshold"]);
+  if (Number.isNaN(threshold) || threshold < 0 || threshold > 1) {
+    throw new Error(`confidence.threshold must be a number in 0..1, got ${String(c["threshold"])}`);
+  }
+  return {
+    threshold,
+    severity: c["severity"] === undefined ? undefined : String(c["severity"]),
+    route_to_role: c["route_to_role"] === undefined ? undefined : String(c["route_to_role"]),
+    expires_after: c["expires_after"] === undefined ? undefined : String(c["expires_after"]),
+    policy_ref: c["policy_ref"] === undefined ? undefined : String(c["policy_ref"]),
   };
 }
 

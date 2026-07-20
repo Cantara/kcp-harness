@@ -23,6 +23,7 @@ import { randomUUID } from "node:crypto";
 import { appendFileSync, mkdirSync, readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { DEFAULT_APPROVALS_DIR, type ApprovalsConfig } from "./config.js";
+import type { ConfidenceVerdict } from "kcp-agent";
 
 /** Lifecycle states for an approval ticket. */
 export type ApprovalState = "pending_review" | "approved" | "dismissed" | "expired";
@@ -51,6 +52,8 @@ export interface ApprovalRequest {
     /** The policy rule that demanded human sign-off. */
     policyRef?: string;
     detail?: string;
+    /** The failed confidence verdict, when the gate routed here. */
+    confidence?: ConfidenceVerdict;
   };
 }
 
