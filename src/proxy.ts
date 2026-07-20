@@ -16,7 +16,8 @@ import { createInterface } from "node:readline";
 import type { HarnessConfig } from "./config.js";
 import { classify } from "./classifier.js";
 import { govern, type GovernanceDecision, type ApprovalContext } from "./governor.js";
-import { providerFromConfig, type ApprovalProvider } from "./approval.js";
+import { providerFromConfig, latestForCall, newRequest, parseDuration, type ApprovalProvider } from "./approval.js";
+import { assess } from "kcp-agent";
 import {
   AuditLog,
   InMemoryAuditLog,
@@ -25,6 +26,7 @@ import {
   buildBudgetEvent,
   buildDriftEvent,
   buildApprovalEvent,
+  buildConfidenceEvent,
   type AuditWriter,
   type AuditEvent,
 } from "./audit.js";
@@ -100,6 +102,27 @@ const HARNESS_TOOLS: McpTool[] = [
           description: "Filter by state: pending_review, approved, dismissed, expired",
         },
       },
+    },
+  },
+  {
+    name: "harness_assess",
+    description:
+      "Confidence-gate a synthesized answer before acting on it. Runs kcp-agent's " +
+      "post-synthesis assess(): the answer's self-reported confidence is adjudicated " +
+      "against the org threshold. A failed verdict is routed to a named human when " +
+      "governance.confidence.route_to_role is set — re-try after approval.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        task: { type: "string", description: "The task the answer concludes" },
+        answer: { type: "string", description: "The synthesized answer to gate" },
+        threshold: {
+          type: "number",
+          description: "Optional tightening of the configured threshold (the strictest wins)",
+        },
+        severity: { type: "string", description: "Severity label override (e.g. critical)" },
+      },
+      required: ["task", "answer"],
     },
   },
 ];
@@ -563,12 +586,123 @@ export class HarnessProxy {
         };
       }
 
+      case "harness_assess":
+        return this.handleAssess(_args);
+
       default:
         return {
           content: [{ type: "text", text: `unknown harness tool: ${name}` }],
           isError: true,
         };
     }
+  }
+
+  /**
+   * Confidence-gate an answer: kcp-agent's assess() decides, the harness
+   * enforces. A failed verdict on a routed config opens an approval ticket
+   * carrying the verdict as evidence; a named human's approval overrides
+   * the gate on retry. Dismissal is terminal.
+   */
+  private async handleAssess(
+    args: Record<string, unknown>,
+  ): Promise<{ content: Array<{ type: string; text: string }>; isError: boolean }> {
+    const err = (text: string) => ({ content: [{ type: "text", text }], isError: true });
+    const ok = (body: unknown) => ({
+      content: [{ type: "text", text: JSON.stringify(body, null, 2) }],
+      isError: false,
+    });
+
+    const task = typeof args["task"] === "string" ? (args["task"] as string) : "";
+    const answer = typeof args["answer"] === "string" ? (args["answer"] as string) : "";
+    if (!task) return err("harness_assess requires a task");
+    if (!answer) return err("harness_assess requires an answer to gate");
+
+    const confidence = this.config.governance.confidence;
+    const callerThreshold = typeof args["threshold"] === "number" ? (args["threshold"] as number) : undefined;
+    // Strictest wins: a caller may tighten org policy, never loosen it.
+    const candidates = [confidence?.threshold, callerThreshold].filter((t): t is number => t !== undefined);
+    if (candidates.length === 0) {
+      return err("harness_assess: no threshold — set governance.confidence.threshold or pass one");
+    }
+    const threshold = Math.max(...candidates);
+    const severity =
+      typeof args["severity"] === "string" ? (args["severity"] as string) : confidence?.severity;
+
+    const verdict = await assess(task, answer, [], { threshold, severity });
+
+    const routing = confidence?.route_to_role && this.approvals ? confidence : undefined;
+    let ticketInfo: Record<string, unknown> | undefined;
+    let override: Record<string, unknown> | undefined;
+    let dismissed: Record<string, unknown> | undefined;
+    let allowed = verdict.passed;
+
+    if (!verdict.passed && routing && this.approvals) {
+      const provider = this.approvals.provider;
+      const existing = await latestForCall(provider, task, "harness_assess");
+
+      if (existing?.state === "approved" && existing.resolution) {
+        // The gate failed, but a named human has overridden it for this task.
+        allowed = true;
+        override = {
+          reviewer: existing.resolution.reviewer,
+          reviewedAt: existing.resolution.reviewedAt,
+          policyRef: existing.resolution.policyRef,
+          ticketId: existing.request.id,
+        };
+      } else if (existing?.state === "pending_review") {
+        ticketInfo = ticketSummary(existing.request.id, existing.state, existing.request.requiredRole);
+      } else if (existing?.state === "dismissed" && existing.resolution) {
+        dismissed = {
+          reviewer: existing.resolution.reviewer,
+          note: existing.resolution.note,
+          ticketId: existing.request.id,
+        };
+      } else {
+        // None yet, or the last ticket expired → open a fresh one with the
+        // verdict as evidence, generated at gate time.
+        const request = newRequest({
+          sessionId: this.session.id,
+          toolName: "harness_assess",
+          target: task,
+          task,
+          requiredRole: routing.route_to_role!,
+          expiresAt: routing.expires_after
+            ? new Date(Date.now() + parseDuration(routing.expires_after)).toISOString()
+            : undefined,
+          evidence: {
+            policyRef: routing.policy_ref,
+            detail: verdict.detail,
+            confidence: verdict,
+          },
+        });
+        await provider.submit(request);
+        const status = await provider.check(request.id);
+        if (status) {
+          this.audit.emit(
+            buildApprovalEvent(this.session.id, nextSequence(this.session), "approval_requested", status),
+          );
+        }
+        ticketInfo = ticketSummary(request.id, "pending_review", routing.route_to_role!);
+      }
+    }
+
+    this.audit.emit(
+      buildConfidenceEvent(
+        this.session.id,
+        nextSequence(this.session),
+        task,
+        verdict,
+        ticketInfo ? (ticketInfo["id"] as string) : undefined,
+      ),
+    );
+
+    return ok({
+      allowed,
+      verdict,
+      ...(ticketInfo ? { ticket: ticketInfo } : {}),
+      ...(override ? { override } : {}),
+      ...(dismissed ? { dismissed } : {}),
+    });
   }
 
   /** Expose session for testing. */
@@ -580,6 +714,10 @@ export class HarnessProxy {
   getApprovalProvider(): ApprovalProvider | undefined {
     return this.approvals?.provider;
   }
+}
+
+function ticketSummary(id: string, state: string, requiredRole: string): Record<string, unknown> {
+  return { id, state, requiredRole };
 }
 
 /** Serve the harness proxy over stdio until stdin closes. */

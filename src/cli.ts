@@ -76,6 +76,16 @@ governance:
     # trusted_keys:
     #   - "./keys/manifest-key.pem"
 
+  # Confidence gate — harness_assess adjudicates an answer's confidence
+  # against this threshold before it may be acted on; failures route to
+  # the named approval role when set
+  # confidence:
+  #   threshold: 0.7
+  #   severity: critical
+  #   route_to_role: account-owner
+  #   expires_after: 72h
+  #   policy_ref: POL-9.1
+
   # Human-approval gates — calls matching a rule are held for a named
   # reviewer (resolve with: kcp-harness approvals approve <id> ...)
   # approvals:
