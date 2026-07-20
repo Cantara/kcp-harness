@@ -29,6 +29,24 @@ governance:
     context_budget: 50000      # Token budget ceiling
     env: prod                  # Environment (affects temporal gates)
 
+  confidence:                  # Post-synthesis confidence gate (harness_assess)
+    threshold: 0.7             # Pass/fail line, 0..1 — callers may tighten, never loosen
+    severity: critical         # Label recorded on verdicts
+    route_to_role: account-owner  # Route failed verdicts to this approval role
+    expires_after: 72h         # TTL for routed tickets
+    policy_ref: POL-9.1        # Policy citation carried as ticket evidence
+
+  approvals:                   # Human-approval gates
+    provider: file             # Ticket store: file (persisted) or memory
+    dir: .kcp-harness/approvals
+    rules:
+      - match:                 # Absent criteria match everything; present ones AND together
+          tools: [Write, Edit]
+          paths: [records/]
+        required_role: account-owner
+        expires_after: 72h     # Unresolved tickets expire (fail-closed)
+        policy_ref: POL-7.2
+
 downstream:
   - name: "filesystem"         # Downstream MCP server name
     command: "npx"             # Command to launch
@@ -68,6 +86,37 @@ governance:
 | `budget` | object | — | Monetary budget ceiling (`amount` + `currency`) |
 | `context_budget` | number | — | Token budget ceiling |
 | `env` | string | — | Environment name (affects temporal gates) |
+
+## Human-Approval Gates
+
+`governance.approvals` holds calls for a **named human** — no matter what the automated
+governance paths would decide. See [Governance Model](/guide/governance#human-approval-gates)
+for the state machine and invariants.
+
+| Field | Type | Description |
+|---|---|---|
+| `provider` | `file` \| `memory` | Ticket store. `file` (default) persists to `dir` and survives restarts |
+| `dir` | string | Store directory (default `.kcp-harness/approvals`) |
+| `rules[].match.tools` | string[] | Tool names the rule applies to (absent = all) |
+| `rules[].match.paths` | string[] | Governed path prefixes (absent = all) |
+| `rules[].required_role` | string | Role that must approve — required |
+| `rules[].expires_after` | duration | Ticket TTL (`30m`, `72h`, `7d`); expired = fail-closed |
+| `rules[].policy_ref` | string | Policy citation carried as ticket evidence |
+
+Approval requirements are **org policy, not knowledge provenance** — they live here in
+`harness.yaml`, never in the (signed) `knowledge.yaml`.
+
+## Confidence Gate
+
+`governance.confidence` configures the [`harness_assess`](/api/mcp-tools#harness-assess) tool.
+
+| Field | Type | Description |
+|---|---|---|
+| `threshold` | number | Pass/fail line, 0..1. A caller-supplied threshold can tighten this but never loosen it |
+| `severity` | string | Label recorded on verdicts (e.g. `critical`) |
+| `route_to_role` | string | When set (and approvals are configured), failed verdicts open an approval ticket for this role |
+| `expires_after` | duration | TTL for routed tickets |
+| `policy_ref` | string | Policy citation carried as ticket evidence |
 
 ## Audit
 

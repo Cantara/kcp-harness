@@ -223,6 +223,7 @@ button.export:hover { background: rgba(63,185,80,0.2); }
     <div class="controls" style="justify-content:center">
       <button class="scenario" id="sc-drift">⚡ Inject drift</button>
       <button class="scenario" id="sc-budget">💸 Budget storm</button>
+      <button class="scenario" id="sc-approval">👤 Human-approval hold</button>
       <button class="scenario hot" id="sc-attack">🛑 Unsigned-manifest attack</button>
       <button class="export" id="btn-export">⬇ Export evidence</button>
       <button class="ghost" id="sc-reset">↺ Reset</button>
@@ -265,6 +266,9 @@ button.export:hover { background: rgba(63,185,80,0.2); }
             <option value="budget_exceeded">budget_exceeded</option>
             <option value="temporal_drift">temporal_drift</option>
             <option value="plan_invalidated">plan_invalidated</option>
+            <option value="approval_requested">approval_requested</option>
+            <option value="approval_resolved">approval_resolved</option>
+            <option value="confidence_verdict">confidence_verdict</option>
           </select>
           <select id="f-outcome">
             <option value="">All outcomes</option>
@@ -325,6 +329,7 @@ button.export:hover { background: rgba(63,185,80,0.2); }
 // ---- Authentic vocabulary drawn from the harness domain model -------------
 const AGENTS = ["claude-code", "cursor", "copilot", "windsurf", "cline", "continue", "crush", "openclaw"];
 const MANIFESTS = ["kb://acme-eng", "docs/manifest.kcp", "policies/security.kcp", "https://kb.acme.com/manifest.kcp"];
+const REVIEWERS = ["Kari N.", "Jonas B.", "Astrid F.", "Mikkel O."];
 const UNGOVERNED_TOOLS = ["Read", "Edit", "Grep", "Glob", "Bash", "WebSearch"];
 const KCP_TOOLS = ["kcp_plan", "kcp_load", "kcp_trace", "kcp_validate"];
 const GOVERNED_TARGETS = [
@@ -395,6 +400,41 @@ function genEvent(s) {
   const roll = Math.random();
   const bias = scenarioBias && scenarioBias.until > Date.now() ? scenarioBias.type : null;
 
+  // Human-approval gate: rule-matched call held for a named reviewer.
+  // The ticket outranks every automated path; a queued resolution follows.
+  if (bias === "approval" || (!bias && roll < 0.045)) {
+    const t = pick(GOVERNED_TARGETS);
+    const id = Math.random().toString(16).slice(2, 10);
+    const reviewer = pick(REVIEWERS);
+    s.governed++;
+    burst.push(
+      (sx) => ({ session: sx, type: "approval_resolved", tool: "approvals-cli", target: t.path,
+                 outcome: "approved", approval: true,
+                 reason: `ticket ${id} approved by ${reviewer} (POL-7.2)` }),
+      (sx) => ({ session: sx, type: "tool_call", tool: "Write", target: t.path,
+                 outcome: "approved", mode: "human-approved", hasSig: true,
+                 reason: `approved by ${reviewer} (POL-7.2) — ticket ${id}` }),
+    );
+    return { session: s, type: "approval_requested", tool: "Write", target: t.path,
+             outcome: "blocked", approval: true,
+             reason: `pending approval ${id} from role account-owner (POL-7.2) — re-try after approval` };
+  }
+
+  // Confidence gate: harness_assess adjudicates a synthesized answer.
+  if (!bias && roll < 0.10) {
+    const t = pick(GOVERNED_TARGETS);
+    const score = +(Math.random()).toFixed(2);
+    s.governed++;
+    if (score >= 0.7) {
+      return { session: s, type: "confidence_verdict", tool: "harness_assess", target: t.path,
+               outcome: "approved",
+               reason: `confidence ${score} >= threshold 0.7 (min of 1 signal)` };
+    }
+    return { session: s, type: "confidence_verdict", tool: "harness_assess", target: t.path,
+             outcome: "blocked",
+             reason: `confidence ${score} < threshold 0.7 on critical task — routed to account-owner` };
+  }
+
   // KCP tool — passes through, it IS the governance layer
   if (roll < 0.12) {
     const tool = pick(KCP_TOOLS);
@@ -455,6 +495,7 @@ function genEvent(s) {
 }
 
 function applyForced(s, b) {
+  if (typeof b === "function") return b(s);
   if (b === "drift") {
     const m = pick(MANIFESTS), moved = 1 + rand(6);
     return { session: s, type: "temporal_drift", tool: "temporal_watch", outcome: "blocked", drift: true,
@@ -502,6 +543,8 @@ function tallyControls(e) {
   if (governedCall) { controls.cc61++; controls.a83++;                          // CC6.1 / A.8.3 — governed access
     if (e.tool === "Read" || e.tool === "Glob" || e.tool === "Grep") controls.a84++; } // A.8.4 — source-code access
   if (e.type === "tool_call" && e.mode === "plan-first") controls.cc63++;       // CC6.3 — pre-authorized access
+  if (e.type === "approval_resolved" || (e.type === "tool_call" && e.mode === "human-approved")) controls.cc63++; // CC6.3 — named-human authorization
+  if (e.type === "approval_requested" || e.type === "confidence_verdict") controls.a816++; // A.8.16 — monitoring (held / adjudicated)
   if (e.type === "temporal_drift" || e.type === "plan_invalidated") controls.cc81++; // CC8.1 — change management
   if (e.type === "session_start" || e.type === "session_end") controls.a815++;  // A.8.15 — logging
   if (e.type === "temporal_drift" || e.type === "budget_exceeded" || e.outcome === "blocked") controls.a816++; // A.8.16 — monitoring
@@ -641,6 +684,7 @@ $("agents-dn").onclick = () => { targetAgents = Math.max(1, targetAgents - 1); $
 
 $("sc-drift").onclick = () => { burst.push("drift", "invalidate"); flashBtn("sc-drift"); };
 $("sc-budget").onclick = () => { scenarioBias = { type: "budget", until: Date.now() + 4000 }; flashBtn("sc-budget"); };
+$("sc-approval").onclick = () => { scenarioBias = { type: "approval", until: Date.now() + 3000 }; flashBtn("sc-approval"); };
 $("sc-attack").onclick = () => { scenarioBias = { type: "attack", until: Date.now() + 4000 }; flashBtn("sc-attack"); };
 $("sc-reset").onclick = () => {
   Object.keys(stats).forEach((k) => stats[k] = 0);
