@@ -64,6 +64,59 @@ Knowledge units can have temporal constraints (valid-from, valid-until, embargo 
 4. If units have drifted (expired, newly valid), emits a `temporal_drift` event
 5. The agent can check drift via `harness_temporal_check`
 
+## Human-Approval Gates
+
+Some governed actions must not be decided by the automated cascade alone: org policy demands a
+**named human** sign off, and that can take minutes or days. Calls matching a
+`governance.approvals` rule enter a durable ticket state machine:
+
+```
+pending_review ──▶ approved   (terminal, named reviewer)
+       │─────────▶ dismissed  (terminal, named reviewer)
+       └─────────▶ expired    (terminal, TTL — fail-closed)
+```
+
+Three invariants:
+
+1. **Approval rules outrank every automated path.** An approved plan cannot bypass a human
+   gate — the rule check runs first.
+2. **Resolutions are never anonymous.** A resolution requires a named reviewer *and* a policy
+   citation (`policyRef`). `approved: true` alone is rejected as evidence. The evidence is
+   generated at approval time, never reconstructed from logs.
+3. **Tickets survive restarts.** Sessions are ephemeral; human review is not. The default
+   file provider persists every ticket, and a CLI in another process resolves it.
+
+MCP has no async answer, so a pending call is denied with a structured reason carrying the
+ticket id and required role. The agent re-tries after approval (or checks
+[`harness_approvals`](/api/mcp-tools#harness-approvals)). On retry the governor honors the
+resolution: approved → allowed with the resolution attached; dismissed → terminal block.
+
+The provider interface (`submit` / `check` / `resolve` / `list`) is channel-agnostic — Slack,
+email, or ticketing integrations are org-side implementations of the same surface the built-in
+[`kcp-harness approvals`](/api/cli#kcp-harness-approvals) CLI uses.
+
+## Post-Synthesis Confidence Gate
+
+The 13 gates all evaluate declared unit properties *before* anything is generated. Confidence
+is a property of the model's **output** — so it is a separate, later stage, downstream of
+synthesis:
+
+> The planner decides what may be **loaded**; grounding decides what may be **asserted**;
+> [`harness_assess`](/api/mcp-tools#harness-assess) decides what may be **acted on**.
+
+The harness calls kcp-agent's `assess()`: confidence is a *proposal* (the answer's
+self-report, or an injected evaluator); the gate *adjudicates* deterministically against the
+configured threshold. The verdict is binary with a written, specific reason — the same
+contract as the 13 pre-selection gates.
+
+- **Strictest threshold wins** — a caller may tighten org policy, never loosen it
+- **Fail-closed** — no obtainable confidence signal fails the gate with a specific reason
+- **Route-to-human** — a failed verdict on a `route_to_role` config opens an approval ticket
+  with the full verdict embedded as evidence ("below threshold on critical → route to a
+  human" *is* a pending approval)
+- Every adjudication is a `confidence_verdict` audit event — score, threshold, reasoning;
+  never the answer text
+
 ## Session Dedup
 
 The harness tracks which units have been loaded in the current session. If an agent requests a unit that's already loaded (same SHA-256 hash), the harness returns an "unchanged" stub instead of re-loading the content. This prevents:

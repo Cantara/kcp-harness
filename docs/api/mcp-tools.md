@@ -125,3 +125,79 @@ Or if drift is detected:
   ]
 }
 ```
+
+## `harness_approvals`
+
+List human-approval tickets: governed calls held for a named reviewer. A call matching a
+`governance.approvals` rule is denied with its ticket id — re-try it after a human resolves
+the ticket (see [`kcp-harness approvals`](/api/cli#kcp-harness-approvals)).
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `state` | string | No | Filter: `pending_review`, `approved`, `dismissed`, `expired` |
+
+**Returns:**
+
+```json
+{
+  "approvals": [
+    {
+      "id": "2d62d5a2-…",
+      "state": "pending_review",
+      "toolName": "Write",
+      "target": "records/customer-7.md",
+      "requiredRole": "account-owner",
+      "requestedAt": "2026-07-20T17:01:04.696Z",
+      "expiresAt": "2026-07-23T17:01:04.696Z",
+      "policyRef": "POL-7.2"
+    }
+  ]
+}
+```
+
+Resolved tickets additionally carry `reviewer`, `reviewedAt`, and (for dismissals) `note`.
+
+## `harness_assess`
+
+Confidence-gate a synthesized answer **before acting on it**. Runs kcp-agent's post-synthesis
+`assess()`: the answer's self-reported confidence is adjudicated deterministically against the
+org threshold (the planner gates *loading*, grounding gates *asserting*, this gates *acting*).
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `task` | string | Yes | The task the answer concludes |
+| `answer` | string | Yes | The synthesized answer to gate |
+| `threshold` | number | No | Tightens the configured threshold — the strictest wins, a caller can never loosen org policy |
+| `severity` | string | No | Severity label override (e.g. `critical`) |
+
+**Returns:**
+
+```json
+{
+  "allowed": false,
+  "verdict": {
+    "gate": "confidence",
+    "passed": false,
+    "threshold": 0.7,
+    "score": 0.4,
+    "signals": [{ "source": "self", "score": 0.4, "reasoning": "self-reported: \"Confidence: 0.4\"" }],
+    "detail": "confidence 0.4 < threshold 0.7 on critical task — self: …",
+    "severity": "critical",
+    "asOf": "2026-07-20"
+  },
+  "ticket": { "id": "…", "state": "pending_review", "requiredRole": "account-owner" }
+}
+```
+
+Behavior on a failed verdict when `governance.confidence.route_to_role` is set:
+
+- **No ticket yet** → one is opened with the verdict embedded as evidence (`ticket` in the result)
+- **Pending** → the same ticket is returned; no duplicate is opened
+- **Approved by a named human** → `allowed: true` with the `override` (reviewer, policyRef) attached — the verdict still records that the gate itself failed
+- **Dismissed** → terminal; `dismissed` (reviewer, note) attached, no new ticket
+
+Fail-closed: an answer with no confidence signal at all fails the gate with a specific reason.

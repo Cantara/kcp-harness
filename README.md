@@ -29,6 +29,8 @@ Agent (Claude Code / Cursor / Copilot / Windsurf / Cline / Crush / OpenClaw / ..
 │  · Audit log           (append-only JSONL)              │
 │  · Budget ledger       (itemized, ceiling-enforced)     │
 │  · Temporal drift      (plan validity over time)        │
+│  · Approval tickets    (named-human sign-off, durable)  │
+│  · Confidence verdicts (post-synthesis gate)            │
 └─────────────────────────────────────────────────────────┘
   │
   v
@@ -51,6 +53,8 @@ compliance layer without replacing the agent.
 | | Temporal governance (drift detection) |
 | | Append-only audit log |
 | | Replay / cross-examination |
+| | Human-approval gates (named reviewer + policy citation) |
+| | Confidence gating (post-synthesis, route-to-human) |
 
 **You sell the compliance layer. The agents are pluggable.**
 
@@ -133,13 +137,17 @@ governed.
 
 ### Governor
 
-Two modes:
+Two automated modes, plus a human gate that outranks both:
 
 - **Plan-first (fast path)** — the agent calls `kcp_plan` first. The harness caches the approved
   plan. Subsequent reads are checked against the cached plan — no re-planning.
 - **Auto-plan (fallback)** — the agent reads a governed path without planning. The harness runs
   the planner automatically. Slower, but governance is enforced even for agents that don't know
   about `kcp_plan`.
+- **Human approval** — calls matching a `governance.approvals` rule are held for a named
+  reviewer (`pending`), no matter what the automated paths would decide. Tickets survive
+  restarts and resolve via the `kcp-harness approvals` CLI (or any custom `ApprovalProvider`
+  channel). Resolutions require a named reviewer *and* a policy citation.
 
 ### The 13-gate cascade
 
@@ -164,8 +172,11 @@ Once connected, agents can use these governance tools:
 | `kcp_trace` | Full 13-gate decision trace |
 | `kcp_validate` | Lint a `knowledge.yaml` |
 | `harness_status` | Current governance state |
+| `harness_session` | Approved plans + known units for this session |
 | `harness_budget` | Itemized spend tracking |
 | `harness_temporal_check` | Plan drift detection |
+| `harness_approvals` | Human-approval tickets (pending / approved / dismissed / expired) |
+| `harness_assess` | Confidence-gate a synthesized answer before acting on it |
 
 ## Compliance artifacts
 
@@ -189,6 +200,21 @@ Plans are registered with a temporal watcher. On subsequent calls, the watcher r
 against the current time. If units have drifted (expired, newly valid), the harness emits a drift
 event. Long-running sessions stay honest.
 
+### Approval tickets
+
+Calls matching an approval rule open a durable ticket
+(`pending_review → approved | dismissed | expired`). The ticket store survives restarts —
+sessions are ephemeral, human review is not. Every resolution records *who* approved,
+*when*, and *which policy* it satisfies — evidence generated at approval time, never
+reconstructed from logs.
+
+### Confidence verdicts
+
+`harness_assess` runs [kcp-agent](https://github.com/Cantara/kcp-agent)'s post-synthesis
+`assess()` over a synthesized answer before it may be acted on. The planner gates *loading*,
+grounding gates *asserting*, this gates *acting*. Below-threshold verdicts on routed configs
+open an approval ticket with the full verdict embedded as evidence.
+
 ## Configuration
 
 ```yaml
@@ -208,6 +234,19 @@ governance:
       amount: 1.00
       currency: USDC
 
+  confidence:                  # optional post-synthesis gate (harness_assess)
+    threshold: 0.7
+    severity: critical
+    route_to_role: account-owner
+
+  approvals:                   # optional human-approval gates
+    provider: file
+    rules:
+      - match: { tools: [Write, Edit], paths: [records/] }
+        required_role: account-owner
+        expires_after: 72h
+        policy_ref: POL-7.2
+
 audit:
   path: ".kcp-harness/audit.jsonl"
 ```
@@ -220,6 +259,11 @@ kcp-harness init                             Create a harness.yaml template
 kcp-harness check  [--config harness.yaml]   Validate configuration
 kcp-harness integrate <agent> [options]       Generate agent integration files
 kcp-harness integrate --list                  List supported agents
+kcp-harness export   [options]               Export compliance evidence (SOC 2 / ISO 27001)
+kcp-harness dashboard [options]              Launch the live compliance dashboard
+kcp-harness approvals list [--state s]        List human-approval tickets
+kcp-harness approvals approve <id> --reviewer <name> --policy-ref <ref>
+kcp-harness approvals dismiss <id> --reviewer <name> --policy-ref <ref>
 ```
 
 ## Library
@@ -256,11 +300,12 @@ const output = generate("claude-code", { manifest: "./knowledge.yaml", paths: ["
 ## Tests
 
 ```bash
-npm test     # 123 tests across 9 test files
+npm test     # 314 tests across 20 test files
 ```
 
-Covers: classifier (28), audit (14), session (9), governor (5), proxy (10), integration (9),
-budget-ledger (14), temporal-watch (6), integrations (28).
+Covers the classifier, governor (incl. approval precedence), approval state machine + providers,
+confidence-gate wiring, proxy, audit, budget ledger, temporal watch, evidence export, dashboard,
+and all agent integrations.
 
 ## License
 

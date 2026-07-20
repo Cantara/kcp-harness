@@ -118,6 +118,77 @@ Logged when a watched plan's temporal validity changes.
 
 Logged when a plan is removed from the session due to drift.
 
+### `approval_requested`
+
+Logged when a governed call is held for a named human — a ticket was opened.
+
+```json
+{
+  "seq": 20,
+  "ts": "2026-07-20T17:01:04.696Z",
+  "type": "approval_requested",
+  "outcome": "blocked",
+  "approval": {
+    "id": "2d62d5a2-…",
+    "state": "pending_review",
+    "toolName": "Write",
+    "target": "records/customer-7.md",
+    "requiredRole": "account-owner",
+    "policyRef": "POL-7.2",
+    "expiresAt": "2026-07-23T17:01:04.696Z"
+  },
+  "session": "abc123"
+}
+```
+
+### `approval_resolved`
+
+Logged when a named reviewer approves or dismisses a ticket. The resolution payload is the
+evidence — reviewer and policy citation are required, recorded at approval time.
+
+```json
+{
+  "seq": 21,
+  "ts": "2026-07-20T17:05:12.000Z",
+  "type": "approval_resolved",
+  "outcome": "approved",
+  "approval": {
+    "id": "2d62d5a2-…",
+    "state": "approved",
+    "reviewer": "Kari N.",
+    "reviewedAt": "2026-07-20T17:05:12.000Z",
+    "policyRef": "POL-7.2",
+    "target": "records/customer-7.md"
+  },
+  "session": "abc123"
+}
+```
+
+### `confidence_verdict`
+
+Logged every time `harness_assess` adjudicates an answer. Records the verdict — score,
+threshold, written reason — never the answer text. When the failure was routed to a human,
+`ticketId` links to the approval ticket.
+
+```json
+{
+  "seq": 25,
+  "ts": "2026-07-20T18:00:00.000Z",
+  "type": "confidence_verdict",
+  "outcome": "blocked",
+  "confidence": {
+    "task": "draft customer risk assessment",
+    "passed": false,
+    "score": 0.4,
+    "threshold": 0.7,
+    "severity": "critical",
+    "detail": "confidence 0.4 < threshold 0.7 on critical task — self: …",
+    "ticketId": "2d62d5a2-…"
+  },
+  "session": "abc123"
+}
+```
+
 ## Security
 
 The audit log **redacts** sensitive content:
@@ -142,4 +213,10 @@ cat .kcp-harness/audit.jsonl | jq 'select(.type == "temporal_drift")'
 
 # Session summary
 cat .kcp-harness/audit.jsonl | jq 'select(.type == "session_end")'
+
+# Human-approval trail: every ticket and who resolved it
+cat .kcp-harness/audit.jsonl | jq 'select(.type | startswith("approval"))'
+
+# Confidence gate outcomes
+cat .kcp-harness/audit.jsonl | jq 'select(.type == "confidence_verdict")'
 ```

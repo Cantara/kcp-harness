@@ -68,6 +68,33 @@ windsurf       cline     continue   crush
 openclaw
 ```
 
+## `kcp-harness approvals`
+
+The built-in review channel for human-approval tickets (the `file` provider). The proxy opens
+tickets; a human resolves them here — from any terminal, in any process, before or after a
+harness restart.
+
+```bash
+# List tickets (optionally by state)
+kcp-harness approvals list [--state pending_review]
+
+# Approve — reviewer and policy citation are REQUIRED, never anonymous
+kcp-harness approvals approve <id> --reviewer "Kari N." --policy-ref POL-7.2 [--note "..."]
+
+# Dismiss — same evidence requirements, terminal outcome
+kcp-harness approvals dismiss <id> --reviewer "Kari N." --policy-ref POL-7.2 [--note "redo the analysis"]
+```
+
+| Flag | Required | Description |
+|---|---|---|
+| `--state` | No | Filter `list` by ticket state |
+| `--reviewer` | Yes (approve/dismiss) | Named human resolving the ticket |
+| `--policy-ref` | Yes (approve/dismiss) | Policy/regulatory citation the resolution satisfies |
+| `--note` | No | Free-text note recorded on the resolution |
+| `--config` | No | Harness config path (default `harness.yaml`) |
+
+Every resolution is appended to the audit log as an `approval_resolved` event.
+
 ## `kcp-harness --version`
 
 Print the version number.
