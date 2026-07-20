@@ -30,7 +30,7 @@ export function generateClaudeCode(options: IntegrationOptions): IntegrationOutp
         hooks: {
           PreToolUse: [
             {
-              matcher: "Read|Edit|Write|Glob|Grep",
+              matcher: "Bash|Read|Edit|Write|Glob|Grep",
               hooks: [
                 {
                   type: "command",
@@ -46,6 +46,60 @@ const deny = (reason) => {
   }));
   process.exit(0);
 };
+// Path matching mirrors src/classifier.ts so native file tools can't slip past
+// with a Bash command, a Glob/Grep pattern, a case variant, or a backslash
+// separator. Plain string ops only — this runs as an inline node script.
+const BS = String.fromCharCode(92);
+const GOV = ${JSON.stringify(paths)}.map((p) => {
+  let b = String(p).split(BS).join("/").toLowerCase();
+  while (b.slice(-1) === "/") b = b.slice(0, -1);
+  return b;
+}).filter(Boolean);
+const norm = (p) => {
+  let n = String(p == null ? "" : p).split(BS).join("/");
+  while (n.indexOf("//") >= 0) n = n.split("//").join("/");
+  if (n.slice(0, 2) === "./") n = n.slice(2);
+  const parts = n.split("/"), out = [];
+  for (let i = 0; i < parts.length; i++) {
+    const s = parts[i];
+    if (s === "..") { if (out.length && out[out.length - 1] !== "..") out.pop(); }
+    else if (s !== "." && s !== "") out.push(s);
+  }
+  return out.join("/").toLowerCase();
+};
+const isGoverned = (t) => {
+  if (!t) return false;
+  const n = norm(t);
+  return GOV.some((b) => n === b || n.indexOf(b + "/") === 0 || n.indexOf("/" + b + "/") >= 0);
+};
+const globPrefix = (pattern) => {
+  const s = String(pattern || "");
+  let idx = -1;
+  for (let i = 0; i < s.length; i++) { if ("*?[{".indexOf(s[i]) >= 0) { idx = i; break; } }
+  if (idx <= 0) return "";
+  const pre = s.slice(0, idx), ls = pre.lastIndexOf("/");
+  if (ls > 0) return pre.slice(0, ls);
+  if (pre.length > 0 && pre.indexOf(".") < 0) { let r = pre; while (r.slice(-1) === "/") r = r.slice(0, -1); return r; }
+  return "";
+};
+const tokens = (cmd) => {
+  const s = String(cmd || ""), seps = " " + String.fromCharCode(9) + String.fromCharCode(10) + ";|&<>()" + String.fromCharCode(34) + String.fromCharCode(39);
+  let cur = "", out = [];
+  for (let i = 0; i < s.length; i++) { const ch = s[i]; if (seps.indexOf(ch) >= 0) { if (cur) { out.push(cur); cur = ""; } } else cur += ch; }
+  if (cur) out.push(cur);
+  return out;
+};
+const bashTarget = (cmd) => {
+  const toks = tokens(cmd);
+  const readCmds = ["cat","head","tail","less","more","vi","vim","nano","code","cp","mv","ln","tar","zip","scp","rsync"];
+  for (let i = 0; i < toks.length; i++) {
+    if (readCmds.indexOf(toks[i]) >= 0) {
+      for (let j = i + 1; j < toks.length; j++) { if (toks[j][0] !== "-" && isGoverned(toks[j])) return toks[j]; }
+    }
+  }
+  if (String(cmd || "").indexOf(">") >= 0) { for (let j = 0; j < toks.length; j++) { if (isGoverned(toks[j])) return toks[j]; } }
+  return "";
+};
 let raw = "";
 process.stdin.on("data", (d) => { raw += d; });
 process.stdin.on("end", () => {
@@ -58,11 +112,15 @@ process.stdin.on("end", () => {
     deny("kcp-harness: could not parse PreToolUse input — failing closed");
     return;
   }
-  const args = input.tool_input || {};
-  const path = args.file_path || args.path || '';
-  const governed = ${JSON.stringify(paths)}.some(p => path.startsWith(p) || path.includes('/' + p));
-  if (governed) {
-    deny("Use kcp_load to access governed knowledge at " + path);
+  const tool = input.tool_name || "";
+  const a = input.tool_input || {};
+  let targets;
+  if (tool === "Glob" || tool === "Grep") targets = [a.path || "", globPrefix(a.pattern)];
+  else if (tool === "Bash") targets = [bashTarget(a.command)];
+  else targets = [a.file_path || a.path || ""];
+  const hit = targets.filter(Boolean).find(isGoverned);
+  if (hit) {
+    deny("Use kcp_load to access governed knowledge at " + hit);
   }
 });
                   `.trim()],
