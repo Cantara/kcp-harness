@@ -83,6 +83,12 @@ kcp-harness approvals approve <id> --reviewer "Kari N." --policy-ref POL-7.2 [--
 
 # Dismiss — same evidence requirements, terminal outcome
 kcp-harness approvals dismiss <id> --reviewer "Kari N." --policy-ref POL-7.2 [--note "redo the analysis"]
+
+# Signed resolution (non-repudiation) — optionally required by
+# governance.approvals.require_signed_resolutions in harness.yaml, see
+# guide/configuration.md
+kcp-harness approvals approve <id> --reviewer "Kari N." --policy-ref POL-7.2 \
+  --private-key ./reviewer-key.pem [--key-id kari-2026]
 ```
 
 | Flag | Required | Description |
@@ -91,9 +97,31 @@ kcp-harness approvals dismiss <id> --reviewer "Kari N." --policy-ref POL-7.2 [--
 | `--reviewer` | Yes (approve/dismiss) | Named human resolving the ticket |
 | `--policy-ref` | Yes (approve/dismiss) | Policy/regulatory citation the resolution satisfies |
 | `--note` | No | Free-text note recorded on the resolution |
+| `--private-key` | Only if `require_signed_resolutions` is on | Path to a PEM private key; signs the resolution for non-repudiation |
+| `--key-id` | No | Key identifier recorded alongside the signature |
 | `--config` | No | Harness config path (default `harness.yaml`) |
 
-Every resolution is appended to the audit log as an `approval_resolved` event.
+Every resolution is appended to the audit log as an `approval_resolved` event. When
+`require_signed_resolutions` is on, an unsigned or invalid `--private-key` resolution is
+rejected fail-closed; a valid one carries `[signed <key-id>]` in the ticket history.
+
+## `kcp-harness export`
+
+Generate compliance evidence bundles from the audit log — see [guide/compliance-export.md](../guide/compliance-export.md) for the full control mapping.
+
+```bash
+kcp-harness export --format both --org "Your Company" --from 2026-07-01 --to 2026-07-07 --out evidence/
+```
+
+| Flag | Required | Description |
+|---|---|---|
+| `--format` | No | `soc2`, `iso27001`, `iso42001`, `euaiact`, or `both` (soc2 + iso27001). Default `both`. |
+| `--org` | No | Organization name for report headers |
+| `--from` | No | Start date filter (ISO 8601) |
+| `--to` | No | End date filter (ISO 8601) |
+| `--out` | No | Output directory (default `evidence`) |
+| `--audit` | No | Path to audit JSONL log (default from config or `.kcp-harness/audit.jsonl`) |
+| `--config` | No | Harness config path (default `harness.yaml`) |
 
 ## `kcp-harness --version`
 

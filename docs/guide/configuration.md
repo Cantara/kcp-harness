@@ -39,6 +39,12 @@ governance:
   approvals:                   # Human-approval gates
     provider: file             # Ticket store: file (persisted) or memory
     dir: .kcp-harness/approvals
+    require_signed_resolutions: false  # true: an unsigned/invalid --private-key resolution
+                                        # fails closed — see api/cli.md `approvals approve`
+    trusted_keys:               # Optional. Reviewer public keys (paths or inline PEM/base64/
+      - ./keys/kari.pub          # hex). When set, a signature must verify against one of these
+                                  # to bind it to a named identity; when omitted, the signature's
+                                  # own embedded key is used (integrity only, not identity).
     rules:
       - match:                 # Absent criteria match everything; present ones AND together
           tools: [Write, Edit]

@@ -8,15 +8,16 @@ The default posture is **deny**. If any of the following are true, knowledge acc
 
 - The manifest can't be loaded
 - The plan rejects all units
-- A unit fails any of the 13 gates
+- A unit fails any of the 14 gates
 - The budget ceiling is exceeded
 - The temporal validity check fails
 
 There is no "best-effort" mode. Either the request is explicitly approved through the gate cascade, or it's blocked.
 
-## The 13-Gate Cascade
+## The 14-Gate Cascade
 
-Every knowledge unit is evaluated through 13 deterministic gates, in order:
+Every knowledge unit is evaluated through 14 deterministic gates, in order (kcp-agent v0.16.0,
+`skill_eligibility` added #100/#101):
 
 | # | Gate | What it checks |
 |---|---|---|
@@ -26,15 +27,16 @@ Every knowledge unit is evaluated through 13 deterministic gates, in order:
 | 4 | `deprecated` | Has the unit been deprecated? |
 | 5 | `supersession` | Has a newer unit superseded this one? |
 | 6 | `relevance` | Is the unit relevant to the task? |
-| 7 | `attestation` | Does the unit have required attestations? |
-| 8 | `payment` | Does access require payment? |
-| 9 | `access` | Does the requester have access rights? |
-| 10 | `strict` | In strict mode, is relevance high enough? |
-| 11 | `max_units` | Would this exceed the unit count limit? |
-| 12 | `money_budget` | Would this exceed the monetary budget? |
-| 13 | `context_budget` | Would this exceed the token budget? |
+| 7 | `skill_eligibility` | For a `kind: skill` unit: does it carry an explicit `load_eligible: true` grant? |
+| 8 | `attestation` | Does the unit have required attestations? |
+| 9 | `payment` | Does access require payment? |
+| 10 | `access` | Does the requester have access rights? |
+| 11 | `strict` | In strict mode, is relevance high enough? |
+| 12 | `max_units` | Would this exceed the unit count limit? |
+| 13 | `money_budget` | Would this exceed the monetary budget? |
+| 14 | `context_budget` | Would this exceed the token budget? |
 
-A unit must pass **all** gates to be included in the plan. The gate that blocks it is recorded in the decision trace.
+A unit must pass **all** gates to be included in the plan. The gate that blocks it is recorded in the decision trace. See **Governed Skills** below for what happens once a `kind: skill` unit clears gate 7 and is actually invoked.
 
 ## Decision Traces
 
@@ -116,6 +118,59 @@ contract as the 13 pre-selection gates.
   human" *is* a pending approval)
 - Every adjudication is a `confidence_verdict` audit event — score, threshold, reasoning;
   never the answer text
+
+## Governed Skills — the harness enforces `skill_eligibility`
+
+A `kind: skill` unit (spec §4.3a) is a procedure, not a document — something an agent could
+*do*. When a governed tool call is classified as a skill invocation, the harness runs
+kcp-agent's `skill_eligibility` gate itself, before the skill's tool call is ever forwarded
+downstream:
+
+- **Ineligible → refused, fail-closed.** No `load_eligible: true` grant means the call never
+  reaches the downstream tool. A `skill_loaded` audit event with `eligible: false` records the
+  gate's exact written reason.
+- **Eligible → loaded, and its `action_scope` becomes binding.** The skill's declared
+  `action_scope` (`tools`/`paths`/`capabilities`) is attached to the session as the *active
+  skill* — every subsequent governed call in that session is now checked against it (see
+  **Procedural Conformance**, next). A skill with no declared scope binds an *empty* one —
+  fail-closed, not permissive.
+- Skill invocations skip the generic plan governor entirely — a skill id is not a file path to
+  plan against, so `skill_eligibility` is the whole story for whether it runs.
+
+Every verdict is a `skill_loaded` (`eligible: true` or `false`) audit event, carrying the
+skill's id, the deciding gate, its written reason, and its `action_scope`.
+
+## Procedural Conformance — grounding for actions
+
+Loading a skill is not a blank check. Once one is active, **every subsequent governed tool
+call in that session** is adjudicated against *that skill's* declared `action_scope` before
+the generic governor runs — the same "cite it or it doesn't count" discipline kcp-agent's
+answer-grounding applies to claims, applied to actions:
+
+- A call that stays within the active skill's `tools`/`paths`/`capabilities` proceeds.
+- A call that strays outside it is held **fail-closed** — surfaced as a gap, routed to a
+  human, never silently narrowed or silently allowed.
+- This check runs *before* plan governance: a scope violation is decided by the loaded skill
+  alone, independent of whether a plan would otherwise have approved the call.
+
+Every adjudication is a `conformance_verdict` audit event, naming the active skill, the tool
+invoked, the deciding target (the violating one, on a hold), and — on a hold — a ticket id if
+the violation was routed for review.
+
+## Decision-Record Correlation
+
+Every tool call the harness intercepts produces a *chain* of verdicts as it moves through
+classification, governance, skill-gating, and confidence adjudication. A single
+**correlation id** ties that whole chain together in the audit log, so a reviewer (or an
+export) can reconstruct exactly which verdicts belong to which action instead of correlating
+timestamps by hand.
+
+Per the KCP spec (§3.2 propagation / §17 observability), the harness reuses an incoming
+[W3C `traceparent`](https://www.w3.org/TR/trace-context/) when the caller supplies one — its
+trace-id becomes the correlation id, its span-id becomes the parent — so harness records
+stitch directly into the caller's own distributed trace. Absent a valid traceparent, the
+harness mints a fresh id. Every audit event in a chain carries `correlationId` (and
+`parentId`, when derived from an incoming trace).
 
 ## Session Dedup
 

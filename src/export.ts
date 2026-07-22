@@ -138,8 +138,10 @@ function exportSOC2(
     "Authorized Access",
     "The entity authorizes, modifies, or removes access to data, software, functions, and other protected information assets based on roles, responsibilities, or the system design and changes.",
     events,
-    (e) => e.type === "tool_call" && e.governance?.mode === "plan-first",
-    (e) => `pre-authorized via plan "${e.governance?.approvedPlan?.task ?? "unknown"}"`,
+    (e) => (e.type === "tool_call" && e.governance?.mode === "plan-first") || e.type === "approval_resolved",
+    (e) => e.type === "approval_resolved"
+      ? `named-human authorization: approved by ${e.approval?.reviewer ?? "unknown"}${e.approval?.policyRef ? ` (${e.approval.policyRef})` : ""}`
+      : `pre-authorized via plan "${e.governance?.approvedPlan?.task ?? "unknown"}"`,
   );
   writeJSON(dir, "CC6.3-authorized-access.json", cc63);
   files.push("soc2/CC6.3-authorized-access.json");
@@ -247,7 +249,8 @@ function exportISO27001(
     "Monitoring Activities",
     "Networks, systems and applications shall be monitored for anomalous behaviour and appropriate actions taken to evaluate potential information security incidents.",
     events,
-    (e) => e.type === "temporal_drift" || e.type === "budget_exceeded" || e.outcome === "blocked",
+    (e) => e.type === "temporal_drift" || e.type === "budget_exceeded" || e.outcome === "blocked"
+      || e.type === "approval_requested" || e.type === "confidence_verdict",
     (e) => `[${e.type}] ${e.outcome}: ${shortDetail(e)}`,
   );
   writeJSON(dir, "A.8.16-monitoring.json", a816);
