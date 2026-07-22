@@ -1,5 +1,8 @@
 # kcp-harness
 
+### 🧾 See it run — [interactive KCP playground](https://cantara.github.io/pi-kcp/playground/) · [read the reveal](https://wiki.totto.org/blog/2026/07/22/the-ai-agent-that-keeps-the-receipts/)
+
+
 **Deterministic knowledge governance for any AI agent.**
 
 > *Your agent can read every file in your project. Can it prove why it read what it read?*
