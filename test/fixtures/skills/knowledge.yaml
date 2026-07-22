@@ -20,6 +20,18 @@ units:
       paths: [infra/]
       capabilities: [deploy]
 
+  - id: docs-viewer-skill
+    path: skills/docs-viewer.md
+    kind: skill
+    intent: "Read the deploy documentation and runbooks"
+    scope: module
+    audience: [agent]
+    triggers: [deploy, docs, documentation, runbook, read]
+    load_eligible: true
+    action_scope:
+      tools: [Read, Grep]
+      paths: [docs/, skills/]
+
   - id: rotate-secrets-skill
     path: skills/rotate-secrets.md
     kind: skill

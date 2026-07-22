@@ -14,8 +14,9 @@
 
 import { createInterface } from "node:readline";
 import type { HarnessConfig } from "./config.js";
-import { classify } from "./classifier.js";
+import { classify, extractTargets } from "./classifier.js";
 import { govern, assessSkillEligibility, type GovernanceDecision, type ApprovalContext } from "./governor.js";
+import { checkConformance, type ObservedAction } from "./conformance.js";
 import { deriveCorrelation } from "./correlation.js";
 import { providerFromConfig, latestForCall, newRequest, parseDuration, type ApprovalProvider } from "./approval.js";
 import { assess } from "kcp-agent";
@@ -28,6 +29,7 @@ import {
   buildDriftEvent,
   buildApprovalEvent,
   buildConfidenceEvent,
+  buildConformanceEvent,
   buildSkillEvent,
   type AuditWriter,
   type AuditEvent,
@@ -41,6 +43,13 @@ import type { BudgetCeiling } from "./budget-ledger.js";
 
 const HARNESS_VERSION = "0.1.0";
 const PROTOCOL_VERSION = "2025-06-18";
+
+/**
+ * Role a non-conformant action is routed to when no confidence route role is
+ * configured (#39). A conformance hold is an oversight event — a named human
+ * decides whether the out-of-scope action may proceed.
+ */
+const CONFORMANCE_REVIEWER_ROLE = "governance-reviewer";
 
 interface JsonRpcRequest {
   jsonrpc?: string;
@@ -328,6 +337,17 @@ export class HarnessProxy {
         this.config.governance.domains,
       );
 
+      // Step 1b: Procedural conformance (#39). Once a governed skill is loaded,
+      // every subsequent governed tool call must stay within that skill's
+      // declared action_scope — "grounding for actions". An out-of-scope action
+      // is surfaced as a gap, routed to a human, and held fail-closed. Checked
+      // before plan governance because a scope violation is decided by the
+      // loaded skill alone — no plan lets an action roam outside its skill.
+      if (classification.governed && !classification.skill && this.session.activeSkill) {
+        const held = await this.enforceConformance(id, toolName, args, correlationId);
+        if (held) return held;
+      }
+
       // Step 2: Govern (for governed calls). Skill invocations skip the generic
       // path/plan governor — they are adjudicated by the skill_eligibility gate
       // in Step 3 instead (a skill id is not a file path to plan against).
@@ -423,6 +443,14 @@ export class HarnessProxy {
             actionScope: skillGate.actionScope,
           }, correlationId),
         );
+
+        // #39: this skill's action_scope now holds every subsequent governed
+        // tool call. An absent scope becomes an empty one — fail-closed, so a
+        // loaded skill that declares no scope holds all later governed actions.
+        this.session.activeSkill = {
+          id: skillGate.skillId,
+          scope: skillGate.actionScope ?? {},
+        };
       }
 
       let result: unknown;
@@ -655,6 +683,97 @@ export class HarnessProxy {
           isError: true,
         };
     }
+  }
+
+  /**
+   * Procedural conformance gate (#39): adjudicate one governed action against
+   * the active skill's declared action_scope and enforce the verdict. The
+   * decision is made by the same pure `checkConformance` the runtime seam uses;
+   * the proxy adds the wiring — a conformance_verdict audit event stamped with
+   * the call's correlation id, and, on a non-conformant action, a pending
+   * approval ticket carrying the failed verdict as evidence. Fail-closed: a held
+   * action returns an error and never reaches govern or the downstream tool. A
+   * named human's prior approval of the same (target, tool) overrides the hold.
+   *
+   * @returns an rpc error result when the action is held; `undefined` when it is
+   * conformant (or a human has overridden the hold) and processing may continue.
+   */
+  private async enforceConformance(
+    id: JsonRpcRequest["id"],
+    toolName: string,
+    args: Record<string, unknown>,
+    correlationId?: string,
+  ): Promise<object | undefined> {
+    const active = this.session.activeSkill;
+    if (!active) return undefined;
+
+    const { paths, urls } = extractTargets(toolName, args);
+    const action: ObservedAction = { tool: toolName, paths, urls };
+    const verdict = checkConformance(action, active.scope);
+
+    if (verdict.passed) {
+      this.audit.emit(
+        buildConformanceEvent(this.session.id, nextSequence(this.session), active.id, verdict, undefined, correlationId),
+      );
+      return undefined;
+    }
+
+    // Non-conformant — route to the approval machinery, then hold fail-closed.
+    const target = verdict.evidence?.target ?? paths[0] ?? urls[0] ?? toolName;
+    let ticketId: string | undefined;
+    let overridden = false;
+
+    if (this.approvals) {
+      const provider = this.approvals.provider;
+      const existing = await latestForCall(provider, target, toolName);
+      if (existing?.state === "approved" && existing.resolution) {
+        // A named human authorized this out-of-scope action — allow on retry.
+        overridden = true;
+        ticketId = existing.request.id;
+      } else if (existing?.state === "pending_review") {
+        // A hold is already open for this (target, tool) — reuse it.
+        ticketId = existing.request.id;
+      } else {
+        const routing = this.config.governance.confidence;
+        const request = newRequest({
+          sessionId: this.session.id,
+          toolName,
+          target,
+          task: `conformance: skill "${active.id}"`,
+          requiredRole: routing?.route_to_role ?? CONFORMANCE_REVIEWER_ROLE,
+          expiresAt: routing?.expires_after
+            ? new Date(Date.now() + parseDuration(routing.expires_after)).toISOString()
+            : undefined,
+          evidence: {
+            policyRef: routing?.policy_ref,
+            detail: verdict.reason,
+            conformance: verdict,
+          },
+        });
+        await provider.submit(request);
+        const status = await provider.check(request.id);
+        if (status) {
+          this.audit.emit(
+            buildApprovalEvent(this.session.id, nextSequence(this.session), "approval_requested", status, correlationId),
+          );
+        }
+        ticketId = request.id;
+      }
+    }
+
+    this.audit.emit(
+      buildConformanceEvent(this.session.id, nextSequence(this.session), active.id, verdict, ticketId, correlationId),
+    );
+
+    // A human override lets the held action proceed to govern/execute.
+    if (overridden) return undefined;
+
+    return rpcResult(id, {
+      content: [
+        { type: "text", text: `[kcp-harness] CONFORMANCE BLOCKED: ${verdict.reason}` },
+      ],
+      isError: true,
+    });
   }
 
   /**

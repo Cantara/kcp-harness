@@ -309,19 +309,22 @@ function exportISO42001(
   writeJSON(dir, "A.6.2.8-event-logs.json", a628);
   files.push("iso42001/A.6.2.8-event-logs.json");
 
-  // A.9.2 — Processes for responsible use of AI systems. Governed tool calls
-  // and governed skill/procedure invocations are both responsible-use evidence:
-  // a skill runs only after passing the planner's skill_eligibility gate.
+  // A.9.2 — Processes for responsible use of AI systems. Governed tool calls,
+  // governed skill/procedure invocations, and the procedural-conformance
+  // adjudication of each post-load action are all responsible-use / operation-
+  // monitoring evidence: a skill runs only after passing skill_eligibility, and
+  // its subsequent actions are held to its declared action_scope (#39).
   const a92 = buildControlEvidence(
     "A.9.2",
     "Processes for Responsible Use of AI Systems",
-    "The organization shall define and implement processes for the responsible use of AI systems, ensuring that governed operations — including invocation of governed skills and procedures — are subject to access control and policy.",
+    "The organization shall define and implement processes for the responsible use of AI systems, ensuring that governed operations — including invocation of governed skills and procedures, and the ongoing monitoring of each invoked procedure's actions against its declared scope — are subject to access control and policy.",
     events,
     (e) =>
       (e.type === "tool_call" && e.classification?.governed === true) ||
       e.type === "skill_loaded" ||
-      e.type === "skill_skipped",
-    (e) => e.skill ? skillDetail(e) : `${e.outcome}: ${e.governance?.reason ?? e.toolCall?.name ?? "unknown"}`,
+      e.type === "skill_skipped" ||
+      e.type === "conformance_verdict",
+    (e) => e.conformance ? conformanceDetail(e) : e.skill ? skillDetail(e) : `${e.outcome}: ${e.governance?.reason ?? e.toolCall?.name ?? "unknown"}`,
   );
   writeJSON(dir, "A.9.2-responsible-use.json", a92);
   files.push("iso42001/A.9.2-responsible-use.json");
@@ -431,13 +434,16 @@ function exportEUAIAct(
   writeJSON(dir, "Art.14-1-approval-gates.json", art14gate);
   files.push("eu-ai-act/Art.14-1-approval-gates.json");
 
-  // Article 14(4) — Ability to intervene, interrupt or halt the system
+  // Article 14(4) — Ability to intervene, interrupt or halt the system. A
+  // non-conformant action — one that strays outside the loaded skill's declared
+  // action_scope — is held fail-closed and routed to a human, evidencing the
+  // intervention capability at the granularity of a single procedural step (#39).
   const art14stop = buildControlEvidence(
     "Art.14(4)",
     "Human Oversight — Intervention and Stop",
-    "Oversight measures shall enable the person to intervene or interrupt the system through a stop button or similar. Blocked calls, exceeded budgets and invalidated plans evidence the halt capability.",
+    "Oversight measures shall enable the person to intervene or interrupt the system through a stop button or similar. Blocked calls, exceeded budgets, invalidated plans and out-of-scope procedure actions held for review evidence the halt capability.",
     events,
-    (e) => e.outcome === "blocked" || e.type === "budget_exceeded" || e.type === "plan_invalidated",
+    (e) => e.outcome === "blocked" || e.type === "budget_exceeded" || e.type === "plan_invalidated" || e.type === "conformance_verdict",
     (e) => `[${e.type}] ${e.outcome}: ${shortDetail(e)}`,
   );
   writeJSON(dir, "Art.14-4-intervention-stop.json", art14stop);
@@ -495,6 +501,7 @@ function buildControlEvidence(
 }
 
 function shortDetail(e: AuditEvent): string {
+  if (e.conformance) return conformanceDetail(e);
   if (e.skill) return `skill "${e.skill.id}" ${e.skill.eligible ? "eligible" : "ineligible"}: ${e.skill.reason}`;
   if (e.drift) return `drift in ${e.drift.manifest}`;
   if (e.budget) return `budget ${e.budget.totals?.USDC ?? 0}/${e.budget.ceiling?.amount ?? "∞"}`;
@@ -507,6 +514,14 @@ function shortDetail(e: AuditEvent): string {
 function skillDetail(e: AuditEvent): string {
   if (!e.skill) return shortDetail(e);
   return `skill "${e.skill.id}" ${e.skill.eligible ? "loaded" : "skipped"} — ${e.skill.gate}: ${e.skill.reason}`;
+}
+
+/** Render a conformance verdict's evidence detail (skill, action, hold reason). */
+function conformanceDetail(e: AuditEvent): string {
+  if (!e.conformance) return shortDetail(e);
+  const c = e.conformance;
+  const act = `${c.tool ?? "?"}${c.target && c.target !== c.tool ? ` → ${c.target}` : ""}`;
+  return `skill "${c.skillId}" action ${act}: ${c.passed ? "conformant" : "held"} — ${c.reason}${c.ticketId ? ` → ${c.ticketId}` : ""}`;
 }
 
 function generateSOC2Report(

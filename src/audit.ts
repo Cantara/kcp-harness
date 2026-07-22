@@ -21,6 +21,7 @@ import type { GovernanceDecision } from "./governor.js";
 import type { LedgerSnapshot } from "./budget-ledger.js";
 import type { DriftResult } from "./temporal-watch.js";
 import type { ApprovalStatus } from "./approval.js";
+import type { ConformanceVerdict } from "./conformance.js";
 
 /** Event types for structured audit logging. */
 export type AuditEventType =
@@ -35,7 +36,8 @@ export type AuditEventType =
   | "approval_resolved"  // Human approval: named reviewer approved/dismissed
   | "confidence_verdict" // Confidence gate: harness_assess adjudicated an answer
   | "skill_loaded"       // Skill/procedure gate: a governed skill passed skill_eligibility
-  | "skill_skipped";     // Skill/procedure gate: a governed skill failed skill_eligibility (fail-closed)
+  | "skill_skipped"      // Skill/procedure gate: a governed skill failed skill_eligibility (fail-closed)
+  | "conformance_verdict"; // Conformance gate: an action checked against the active skill's action_scope (#39)
 
 /** A single audit event. */
 export interface AuditEvent {
@@ -129,6 +131,25 @@ export interface AuditEvent {
     reason: string;
     /** Declared action scope of the skill (tools/paths/capabilities it may touch). */
     actionScope?: { tools?: string[]; paths?: string[]; capabilities?: string[] };
+  };
+  /**
+   * Procedural conformance verdict (for conformance_verdict events; #39). The
+   * adjudication of one governed action against the active skill's action_scope
+   * — never the action's payload, only the decision and the deciding target.
+   */
+  conformance?: {
+    /** The active skill whose scope the action was checked against. */
+    skillId: string;
+    /** Whether the action stayed within the skill's declared action_scope. */
+    passed: boolean;
+    /** The gate's written reason — names the violating target on a hold. */
+    reason: string;
+    /** The tool the observed action invoked. */
+    tool?: string;
+    /** The deciding target (the violating one on a hold). */
+    target?: string;
+    /** Ticket opened for a non-conformant action, when routing applied. */
+    ticketId?: string;
   };
 }
 
@@ -307,6 +328,40 @@ export function buildConfidenceEvent(
       threshold: verdict.threshold,
       detail: verdict.detail,
       severity: verdict.severity,
+      ticketId,
+    },
+  };
+}
+
+/**
+ * Build a conformance-gate event (#39): the verdict of checking one governed
+ * action against the active skill's action_scope. Carries the decision and the
+ * deciding target only — never the action's payload. `ticketId` is set when a
+ * non-conformant action was routed to a human. Correlation-stamped so the hold
+ * stitches into the same decision-record chain as the rest of the tool call.
+ */
+export function buildConformanceEvent(
+  sessionId: string,
+  sequence: number,
+  skillId: string,
+  verdict: ConformanceVerdict,
+  ticketId?: string,
+  correlationId?: string,
+): AuditEvent {
+  return {
+    timestamp: new Date().toISOString(),
+    sessionId,
+    sequence,
+    ...(correlationId ? { correlationId } : {}),
+    type: "conformance_verdict",
+    outcome: verdict.passed ? "approved" : "blocked",
+    durationMs: 0,
+    conformance: {
+      skillId,
+      passed: verdict.passed,
+      reason: verdict.reason,
+      tool: verdict.evidence?.tool,
+      target: verdict.evidence?.target,
       ticketId,
     },
   };

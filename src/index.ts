@@ -60,10 +60,19 @@ export {
   buildDriftEvent,
   buildApprovalEvent,
   buildConfidenceEvent,
+  buildConformanceEvent,
+  buildSkillEvent,
   type AuditWriter,
   type AuditEvent,
   type AuditEventType,
 } from "./audit.js";
+
+export {
+  checkConformance,
+  type ConformanceVerdict,
+  type ObservedAction,
+  type ActionScope,
+} from "./conformance.js";
 
 export {
   createSession,

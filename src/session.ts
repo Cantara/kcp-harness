@@ -14,6 +14,19 @@ import { randomUUID } from "node:crypto";
 import type { AgentPlan, PlannedUnit, FollowOptions } from "kcp-agent";
 import { BudgetLedger, type BudgetCeiling } from "./budget-ledger.js";
 import { TemporalWatch } from "./temporal-watch.js";
+import type { ActionScope } from "./conformance.js";
+
+/**
+ * The action scope of the most-recently-loaded governed skill (#39). Set when a
+ * `skill_loaded` verdict fires; subsequent governed tool calls are held to this
+ * scope by the procedural conformance gate.
+ */
+export interface ActiveSkill {
+  /** The loaded skill unit's id. */
+  id: string;
+  /** The scope declared by that skill — the allowlist every later action is checked against. */
+  scope: ActionScope;
+}
 
 /** An approved plan — the set of units the agent is allowed to access. */
 export interface ApprovedPlan {
@@ -45,6 +58,11 @@ export interface SessionState {
   ledger: BudgetLedger;
   /** Temporal watcher — detects plan drift. */
   temporalWatch: TemporalWatch;
+  /**
+   * The active governed skill whose action_scope holds subsequent governed tool
+   * calls (#39). Set when a skill_loaded verdict fires; undefined until then.
+   */
+  activeSkill?: ActiveSkill;
 }
 
 /** Create a fresh session state. */
