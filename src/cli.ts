@@ -46,7 +46,7 @@ as knowledge-navigation or pass-through, and routes governed calls
 through the kcp-agent planner before execution.
 `;
 
-const VERSION = "0.7.0";
+const VERSION = "0.8.0";
 
 const TEMPLATE = `# kcp-harness configuration
 version: "1.0"
