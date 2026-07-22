@@ -24,6 +24,14 @@ export interface Classification {
   target?: string;
   /** Human-readable reason for the classification. */
   reason: string;
+  /**
+   * True when the call invokes a governed skill/procedure (#100). Skill calls
+   * are additionally run through the planner's `skill_eligibility` gate before
+   * they may execute — see proxy's EXECUTE branch.
+   */
+  skill?: boolean;
+  /** The skill unit id to gate (when `skill` is true). */
+  skillId?: string;
 }
 
 // -- Path extraction from tool arguments -----------------------------------
@@ -58,6 +66,25 @@ const URL_EXTRACTORS: Record<string, (args: Record<string, unknown>) => string |
 /** KCP tools are always classified as knowledge-nav. */
 const KCP_TOOLS = new Set(["kcp_plan", "kcp_load", "kcp_trace", "kcp_validate", "kcp_replay"]);
 
+/**
+ * Tool names that always denote a skill/procedure invocation (#100), mirroring
+ * KCP_TOOLS. A domain may declare additional skill tools via its `skills` field.
+ * The `Skill` built-in and `kcp_skill` load a governed procedure unit; the
+ * skill unit id is carried in the call arguments.
+ */
+const SKILL_TOOLS = new Set(["kcp_skill", "Skill"]);
+
+/** Extract the invoked skill's unit id from a skill call's arguments. */
+function extractSkillId(args: Record<string, unknown>): string | undefined {
+  return (
+    str(args["skill"]) ??
+    str(args["skillId"]) ??
+    str(args["skill_id"]) ??
+    str(args["id"]) ??
+    str(args["name"])
+  );
+}
+
 // -- Classification ---------------------------------------------------------
 
 /**
@@ -65,10 +92,11 @@ const KCP_TOOLS = new Set(["kcp_plan", "kcp_load", "kcp_trace", "kcp_validate", 
  *
  * Classification rules (in order):
  * 1. KCP tools → always governed (route to kcp-agent directly)
- * 2. Tool name in domain's `tools` list → governed by that domain
- * 3. File path extracted from arguments → match against domain paths
- * 4. URL extracted from arguments → match against domain URLs
- * 5. Otherwise → pass-through (ungoverned)
+ * 2. Skill tools (built-in or domain-declared) → governed skill invocation
+ * 3. Tool name in domain's `tools` list → governed by that domain
+ * 4. File path extracted from arguments → match against domain paths
+ * 5. URL extracted from arguments → match against domain URLs
+ * 6. Otherwise → pass-through (ungoverned)
  */
 export function classify(
   toolName: string,
@@ -80,14 +108,36 @@ export function classify(
     return { governed: true, reason: `KCP tool: ${toolName}` };
   }
 
-  // Rule 2: tool name explicitly listed in a domain
+  // Rule 2: skill/procedure invocation — a built-in skill tool, or a tool a
+  // domain declares in its `skills` list. Governed as a skill so the proxy
+  // runs it through the planner's skill_eligibility gate (fail-closed).
+  const skillDomain = domains.find((d) => d.skills?.includes(toolName));
+  if (SKILL_TOOLS.has(toolName) || skillDomain) {
+    const skillId = extractSkillId(args);
+    // A domain-declared skill tool binds the invocation to that domain's
+    // manifest; a bare built-in skill tool needs a domain to gate against and
+    // otherwise falls through to path/URL classification below.
+    const domain = skillDomain ?? domains.find((d) => d.manifest);
+    if (domain) {
+      return {
+        governed: true,
+        domain,
+        skill: true,
+        skillId,
+        target: skillId,
+        reason: `skill tool ${toolName}${skillId ? ` invoking "${skillId}"` : ""} is governed by ${domain.manifest}`,
+      };
+    }
+  }
+
+  // Rule 3: tool name explicitly listed in a domain
   for (const domain of domains) {
     if (domain.tools?.includes(toolName)) {
       return { governed: true, domain, reason: `tool ${toolName} is governed by ${domain.manifest}` };
     }
   }
 
-  // Rule 3: extract path and match against governed path prefixes
+  // Rule 4: extract path and match against governed path prefixes
   const pathExtractor = Object.hasOwn(PATH_EXTRACTORS, toolName) ? PATH_EXTRACTORS[toolName] : undefined;
   if (pathExtractor) {
     const target = pathExtractor(args);
@@ -110,7 +160,7 @@ export function classify(
     }
   }
 
-  // Rule 4: extract URL and match against governed URL prefixes
+  // Rule 5: extract URL and match against governed URL prefixes
   const urlExtractor = Object.hasOwn(URL_EXTRACTORS, toolName) ? URL_EXTRACTORS[toolName] : undefined;
   if (urlExtractor) {
     const target = urlExtractor(args);
@@ -132,7 +182,7 @@ export function classify(
     }
   }
 
-  // Rule 5: pass-through
+  // Rule 6: pass-through
   return { governed: false, reason: `tool ${toolName} does not target a governed domain` };
 }
 

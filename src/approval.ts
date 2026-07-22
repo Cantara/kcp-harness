@@ -29,6 +29,7 @@ import {
   type ResolutionSignature,
 } from "./resolution-signature.js";
 import type { ConfidenceVerdict } from "kcp-agent";
+import type { ConformanceVerdict } from "./conformance.js";
 
 /** Lifecycle states for an approval ticket. */
 export type ApprovalState = "pending_review" | "approved" | "dismissed" | "expired";
@@ -59,6 +60,8 @@ export interface ApprovalRequest {
     detail?: string;
     /** The failed confidence verdict, when the gate routed here. */
     confidence?: ConfidenceVerdict;
+    /** The failed procedural conformance verdict, when the gate routed here (#39). */
+    conformance?: ConformanceVerdict;
   };
 }
 

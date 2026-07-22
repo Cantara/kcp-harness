@@ -157,6 +157,31 @@ describe("HarnessProxy", () => {
     expect(event.toolCall.name).toBe("Read");
   });
 
+  it("stamps a minted correlation id on the audit event for a call", async () => {
+    await proxy.handleMessage({
+      jsonrpc: "2.0",
+      id: 20,
+      method: "tools/call",
+      params: { name: "harness_status", arguments: {} },
+    });
+    const event = audit.events.at(-1)!;
+    expect(event.correlationId).toBeTruthy();
+    expect(event.parentId).toBeUndefined();
+  });
+
+  it("reuses an incoming W3C traceparent as the correlation id + parent span", async () => {
+    const traceparent = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
+    await proxy.handleMessage({
+      jsonrpc: "2.0",
+      id: 21,
+      method: "tools/call",
+      params: { name: "harness_status", arguments: { traceparent } },
+    });
+    const event = audit.events.at(-1)!;
+    expect(event.correlationId).toBe("4bf92f3577b34da6a3ce929d0e0e4736");
+    expect(event.parentId).toBe("00f067aa0ba902b7");
+  });
+
   it("maintains session state across calls", async () => {
     const session = proxy.getSession();
     expect(session.sequence).toBe(0);

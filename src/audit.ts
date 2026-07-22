@@ -21,6 +21,7 @@ import type { GovernanceDecision } from "./governor.js";
 import type { LedgerSnapshot } from "./budget-ledger.js";
 import type { DriftResult } from "./temporal-watch.js";
 import type { ApprovalStatus } from "./approval.js";
+import type { ConformanceVerdict } from "./conformance.js";
 
 /** Event types for structured audit logging. */
 export type AuditEventType =
@@ -33,7 +34,10 @@ export type AuditEventType =
   | "plan_invalidated"   // Temporal watch: plan invalidated due to drift
   | "approval_requested" // Human approval: ticket opened
   | "approval_resolved"  // Human approval: named reviewer approved/dismissed
-  | "confidence_verdict"; // Confidence gate: harness_assess adjudicated an answer
+  | "confidence_verdict" // Confidence gate: harness_assess adjudicated an answer
+  | "skill_loaded"       // Skill/procedure gate: a governed skill passed skill_eligibility
+  | "skill_skipped"      // Skill/procedure gate: a governed skill failed skill_eligibility (fail-closed)
+  | "conformance_verdict"; // Conformance gate: an action checked against the active skill's action_scope (#39)
 
 /** A single audit event. */
 export interface AuditEvent {
@@ -43,6 +47,18 @@ export interface AuditEvent {
   sessionId: string;
   /** Monotonic sequence number within the session. */
   sequence: number;
+  /**
+   * Decision-record chain id: one correlation id per intercepted tool call,
+   * shared by every verdict that call produces (govern → grounding →
+   * confidence → approval → skill). Reused from an incoming W3C `traceparent`
+   * trace-id when present, else minted. Optional for backward compatibility.
+   */
+  correlationId?: string;
+  /**
+   * Parent span id — the caller's W3C `traceparent` span-id when this call was
+   * stitched into an upstream trace. Absent for a locally-minted correlation.
+   */
+  parentId?: string;
   /** Event type for structured filtering. */
   type: AuditEventType;
   /** The tool call that was intercepted (for tool_call events). */
@@ -101,6 +117,40 @@ export interface AuditEvent {
     /** Ticket opened for the failure, when routing applied. */
     ticketId?: string;
   };
+  /** Skill/procedure invocation verdict (for skill_loaded / skill_skipped events). */
+  skill?: {
+    /** The governed skill unit's id. */
+    id: string;
+    /** The manifest that governs the skill. */
+    manifest?: string;
+    /** Whether the planner's skill_eligibility gate admitted the skill. */
+    eligible: boolean;
+    /** The gate that decided this — normally skill_eligibility. */
+    gate: string;
+    /** The written reason from the deciding gate (never reconstructed). */
+    reason: string;
+    /** Declared action scope of the skill (tools/paths/capabilities it may touch). */
+    actionScope?: { tools?: string[]; paths?: string[]; capabilities?: string[] };
+  };
+  /**
+   * Procedural conformance verdict (for conformance_verdict events; #39). The
+   * adjudication of one governed action against the active skill's action_scope
+   * — never the action's payload, only the decision and the deciding target.
+   */
+  conformance?: {
+    /** The active skill whose scope the action was checked against. */
+    skillId: string;
+    /** Whether the action stayed within the skill's declared action_scope. */
+    passed: boolean;
+    /** The gate's written reason — names the violating target on a hold. */
+    reason: string;
+    /** The tool the observed action invoked. */
+    tool?: string;
+    /** The deciding target (the violating one on a hold). */
+    target?: string;
+    /** Ticket opened for a non-conformant action, when routing applied. */
+    ticketId?: string;
+  };
 }
 
 /** Append-only audit log writer. */
@@ -157,11 +207,15 @@ export function buildEvent(
   outcome: AuditEvent["outcome"],
   durationMs: number,
   error?: string,
+  correlationId?: string,
+  parentId?: string,
 ): AuditEvent {
   return {
     timestamp: new Date().toISOString(),
     sessionId,
     sequence,
+    ...(correlationId ? { correlationId } : {}),
+    ...(parentId ? { parentId } : {}),
     type: "tool_call",
     toolCall: { name: toolName, args: sanitizeArgs(toolName, args) },
     classification,
@@ -179,11 +233,13 @@ export function buildLifecycleEvent(
   sequence: number,
   type: "session_start" | "session_end",
   details?: Record<string, unknown>,
+  correlationId?: string,
 ): AuditEvent {
   return {
     timestamp: new Date().toISOString(),
     sessionId,
     sequence,
+    ...(correlationId ? { correlationId } : {}),
     type,
     outcome: "approved",
     durationMs: 0,
@@ -198,11 +254,13 @@ export function buildBudgetEvent(
   accepted: boolean,
   snapshot: LedgerSnapshot,
   details?: { manifest?: string; unitId?: string; amount?: number; currency?: string },
+  correlationId?: string,
 ): AuditEvent {
   return {
     timestamp: new Date().toISOString(),
     sessionId,
     sequence,
+    ...(correlationId ? { correlationId } : {}),
     type: accepted ? "budget_spend" : "budget_exceeded",
     outcome: accepted ? "approved" : "blocked",
     durationMs: 0,
@@ -217,11 +275,13 @@ export function buildApprovalEvent(
   sequence: number,
   type: "approval_requested" | "approval_resolved",
   status: ApprovalStatus,
+  correlationId?: string,
 ): AuditEvent {
   return {
     timestamp: new Date().toISOString(),
     sessionId,
     sequence,
+    ...(correlationId ? { correlationId } : {}),
     type,
     // A request is not yet an outcome; a resolution's outcome follows the reviewer.
     outcome: status.state === "approved" ? "approved" : "blocked",
@@ -251,11 +311,13 @@ export function buildConfidenceEvent(
   task: string,
   verdict: { passed: boolean; score: number; threshold: number; detail: string; severity?: string },
   ticketId?: string,
+  correlationId?: string,
 ): AuditEvent {
   return {
     timestamp: new Date().toISOString(),
     sessionId,
     sequence,
+    ...(correlationId ? { correlationId } : {}),
     type: "confidence_verdict",
     outcome: verdict.passed ? "approved" : "blocked",
     durationMs: 0,
@@ -271,16 +333,52 @@ export function buildConfidenceEvent(
   };
 }
 
-/** Build a temporal drift event. */
-export function buildDriftEvent(
+/**
+ * Build a conformance-gate event (#39): the verdict of checking one governed
+ * action against the active skill's action_scope. Carries the decision and the
+ * deciding target only — never the action's payload. `ticketId` is set when a
+ * non-conformant action was routed to a human. Correlation-stamped so the hold
+ * stitches into the same decision-record chain as the rest of the tool call.
+ */
+export function buildConformanceEvent(
   sessionId: string,
   sequence: number,
-  drift: DriftResult,
+  skillId: string,
+  verdict: ConformanceVerdict,
+  ticketId?: string,
+  correlationId?: string,
 ): AuditEvent {
   return {
     timestamp: new Date().toISOString(),
     sessionId,
     sequence,
+    ...(correlationId ? { correlationId } : {}),
+    type: "conformance_verdict",
+    outcome: verdict.passed ? "approved" : "blocked",
+    durationMs: 0,
+    conformance: {
+      skillId,
+      passed: verdict.passed,
+      reason: verdict.reason,
+      tool: verdict.evidence?.tool,
+      target: verdict.evidence?.target,
+      ticketId,
+    },
+  };
+}
+
+/** Build a temporal drift event. */
+export function buildDriftEvent(
+  sessionId: string,
+  sequence: number,
+  drift: DriftResult,
+  correlationId?: string,
+): AuditEvent {
+  return {
+    timestamp: new Date().toISOString(),
+    sessionId,
+    sequence,
+    ...(correlationId ? { correlationId } : {}),
     type: "temporal_drift",
     outcome: "blocked",
     durationMs: 0,
@@ -289,6 +387,45 @@ export function buildDriftEvent(
       summary: drift.summary,
       movedUnits: drift.diff?.moves.length,
       newPlanAsOf: drift.diff?.b.asOf,
+    },
+  };
+}
+
+/**
+ * Build a skill/procedure-gate event: the planner's skill_eligibility verdict
+ * for a governed skill unit. Modeled on buildDriftEvent — carries the skill id,
+ * the gate's written reason, and the skill's declared action scope. `loaded`
+ * true → the skill passed the gate (skill_loaded); false → it failed and the
+ * call was refused fail-closed (skill_skipped).
+ */
+export function buildSkillEvent(
+  sessionId: string,
+  sequence: number,
+  loaded: boolean,
+  detail: {
+    id: string;
+    reason: string;
+    manifest?: string;
+    gate?: string;
+    actionScope?: { tools?: string[]; paths?: string[]; capabilities?: string[] };
+  },
+  correlationId?: string,
+): AuditEvent {
+  return {
+    timestamp: new Date().toISOString(),
+    sessionId,
+    sequence,
+    ...(correlationId ? { correlationId } : {}),
+    type: loaded ? "skill_loaded" : "skill_skipped",
+    outcome: loaded ? "approved" : "blocked",
+    durationMs: 0,
+    skill: {
+      id: detail.id,
+      manifest: detail.manifest,
+      eligible: loaded,
+      gate: detail.gate ?? "skill_eligibility",
+      reason: detail.reason,
+      actionScope: detail.actionScope,
     },
   };
 }
