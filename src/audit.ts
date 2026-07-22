@@ -22,6 +22,7 @@ import type { LedgerSnapshot } from "./budget-ledger.js";
 import type { DriftResult } from "./temporal-watch.js";
 import type { ApprovalStatus } from "./approval.js";
 import type { ConformanceVerdict } from "./conformance.js";
+import type { PurchaseReceiptPayload, PurchaseReceiptSignature } from "./purchase-receipt.js";
 
 /** Event types for structured audit logging. */
 export type AuditEventType =
@@ -37,7 +38,8 @@ export type AuditEventType =
   | "confidence_verdict" // Confidence gate: harness_assess adjudicated an answer
   | "skill_loaded"       // Skill/procedure gate: a governed skill passed skill_eligibility
   | "skill_skipped"      // Skill/procedure gate: a governed skill failed skill_eligibility (fail-closed)
-  | "conformance_verdict"; // Conformance gate: an action checked against the active skill's action_scope (#39)
+  | "conformance_verdict" // Conformance gate: an action checked against the active skill's action_scope (#39)
+  | "purchase_settled";  // Purchase conformance: a governed buy cleared the spend gate and settled (#139)
 
 /** A single audit event. */
 export interface AuditEvent {
@@ -150,6 +152,27 @@ export interface AuditEvent {
     target?: string;
     /** Ticket opened for a non-conformant action, when routing applied. */
     ticketId?: string;
+  };
+  /**
+   * A settled governed purchase (for purchase_settled events; #139). Carries
+   * what was bought — vendor, amount, currency — and the signed receipt binding
+   * it non-repudiably. Never the wallet secret, only the receipt id + signature.
+   */
+  purchase?: {
+    /** The vendor paid. */
+    vendor: string;
+    /** The amount spent, in `currency`. */
+    amount: number;
+    /** The currency of the amount. */
+    currency: string;
+    /** The settlement receipt's id. */
+    receipt: string;
+    /** Whether the receipt carried a verifiable signature. */
+    signed?: boolean;
+    /** base64 detached signature over the receipt's canonical payload. */
+    signature?: string;
+    /** Key identifier of the receipt signature, when present. */
+    keyId?: string;
   };
 }
 
@@ -266,6 +289,45 @@ export function buildBudgetEvent(
     durationMs: 0,
     budget: snapshot,
     ...(details ? { toolCall: { name: accepted ? "budget_spend" : "budget_exceeded", args: details } } : {}),
+  };
+}
+
+/**
+ * Build a purchase-settlement event (#139): a governed buy that cleared the
+ * spend conformance gate and settled. Modeled on buildBudgetEvent — carries the
+ * transacted `{ vendor, amount, currency }` and the signed `receipt` binding it.
+ * Correlation-stamped so the settlement stitches into the same decision-record
+ * chain as the conformance verdict that admitted it. Records only the receipt
+ * id and its detached signature — never the wallet secret.
+ */
+export function buildPurchaseEvent(
+  sessionId: string,
+  sequence: number,
+  receipt: PurchaseReceiptPayload,
+  signature?: PurchaseReceiptSignature,
+  correlationId?: string,
+): AuditEvent {
+  return {
+    timestamp: new Date().toISOString(),
+    sessionId,
+    sequence,
+    ...(correlationId ? { correlationId } : {}),
+    type: "purchase_settled",
+    outcome: "approved",
+    durationMs: 0,
+    purchase: {
+      vendor: receipt.vendor,
+      amount: receipt.amount,
+      currency: receipt.currency,
+      receipt: receipt.id,
+      ...(signature
+        ? {
+            signed: true,
+            signature: signature.value,
+            ...(signature.keyId ? { keyId: signature.keyId } : {}),
+          }
+        : {}),
+    },
   };
 }
 

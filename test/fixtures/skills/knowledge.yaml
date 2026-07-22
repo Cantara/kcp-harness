@@ -32,6 +32,21 @@ units:
       tools: [Read, Grep]
       paths: [docs/, skills/]
 
+  - id: procurement-skill
+    path: skills/procurement.md
+    kind: skill
+    intent: "Purchase approved supplies from authorized vendors within budget"
+    scope: module
+    audience: [agent]
+    triggers: [purchase, buy, procure, vendor, order, supplies]
+    load_eligible: true
+    action_scope:
+      tools: [purchase]
+      spend:
+        max_spend: 500
+        allowed_vendors: [acme-supplies, globex]
+        currency: USD
+
   - id: rotate-secrets-skill
     path: skills/rotate-secrets.md
     kind: skill
