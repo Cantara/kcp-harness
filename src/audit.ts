@@ -85,6 +85,10 @@ export interface AuditEvent {
     reviewedAt?: string;
     note?: string;
     expiresAt?: string;
+    /** Whether the resolution carried a verified reviewer signature. */
+    signed?: boolean;
+    /** Key identifier of the resolution signature, when present. */
+    keyId?: string;
   };
   /** Confidence verdict summary (for confidence_verdict events; no answer text). */
   confidence?: {
@@ -233,6 +237,9 @@ export function buildApprovalEvent(
       reviewedAt: status.resolution?.reviewedAt,
       note: status.resolution?.note,
       expiresAt: status.request.expiresAt,
+      ...(status.resolution?.signature
+        ? { signed: true, ...(status.resolution.signature.keyId ? { keyId: status.resolution.signature.keyId } : {}) }
+        : {}),
     },
   };
 }

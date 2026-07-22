@@ -29,12 +29,25 @@ export {
   newRequest,
   parseDuration,
   latestForCall,
+  resolutionPayload,
   type ApprovalProvider,
   type ApprovalRequest,
   type ApprovalResolution,
   type ApprovalStatus,
   type ApprovalState,
+  type SignaturePolicy,
 } from "./approval.js";
+
+export {
+  canonicalResolutionPayload,
+  signResolution,
+  signPayload,
+  verifyResolutionSignature,
+  importPublicKey,
+  importPrivateKey,
+  type ResolutionSignature,
+  type ResolutionSignaturePayload,
+} from "./resolution-signature.js";
 
 export { runApprovals } from "./approvals-cli.js";
 
