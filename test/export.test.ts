@@ -219,6 +219,53 @@ describe("exportEvidence", () => {
     expect(a523.evidenceCount).toBe(2);
   });
 
+  // #33 — approval_resolved and confidence_verdict are the strongest human-
+  // oversight evidence the harness produces; they were missing from SOC2/
+  // ISO27001 export entirely, even though the live demo dashboard's tallyControls()
+  // claims (falsely) to mirror these exact predicates.
+  it("maps approval_resolved (named-human authorization) to SOC2 CC6.3", async () => {
+    writeLog([
+      makeEvent({
+        type: "approval_resolved",
+        outcome: "approved",
+        approval: { id: "t1", state: "approved", reviewer: "bob", policyRef: "POL-7.2" },
+      }),
+      makeEvent({ type: "tool_call", outcome: "approved", sequence: 2 }),
+    ]);
+
+    await exportEvidence({ auditPath: LOG_PATH, outputDir: OUT_DIR, format: "soc2" });
+
+    const cc63 = readJSON(join(OUT_DIR, "soc2/CC6.3-authorized-access.json")) as any;
+    expect(cc63.evidenceCount).toBe(1);
+    expect(cc63.events[0].detail).toMatch(/bob/);
+  });
+
+  it("maps approval_requested and confidence_verdict to ISO27001 A.8.16 — including PASSING verdicts", async () => {
+    // The generic `outcome === "blocked"` clause already caught a failed/held
+    // verdict by accident. The real gap: a confidence_verdict that CLEARED
+    // the threshold (outcome: "approved") is itself monitoring evidence —
+    // every adjudication run is evidence, not just the ones that held.
+    writeLog([
+      makeEvent({
+        type: "approval_requested",
+        outcome: "blocked",
+        approval: { id: "t1", state: "pending", requiredRole: "lead", toolName: "Bash" },
+      }),
+      makeEvent({
+        type: "confidence_verdict",
+        outcome: "approved",
+        confidence: { task: "answer", passed: true, score: 0.9, threshold: 0.8, detail: "cleared" },
+        sequence: 2,
+      }),
+      makeEvent({ type: "tool_call", outcome: "approved", sequence: 3 }),
+    ]);
+
+    await exportEvidence({ auditPath: LOG_PATH, outputDir: OUT_DIR, format: "iso27001" });
+
+    const a816 = readJSON(join(OUT_DIR, "iso27001/A.8.16-monitoring.json")) as any;
+    expect(a816.evidenceCount).toBe(2);
+  });
+
   it("generates Markdown summary reports", async () => {
     writeLog([makeEvent()]);
 
