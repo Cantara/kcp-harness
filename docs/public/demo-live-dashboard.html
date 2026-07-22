@@ -224,6 +224,7 @@ button.export:hover { background: rgba(63,185,80,0.2); }
       <button class="scenario" id="sc-drift">⚡ Inject drift</button>
       <button class="scenario" id="sc-budget">💸 Budget storm</button>
       <button class="scenario" id="sc-approval">👤 Human-approval hold</button>
+      <button class="scenario" id="sc-skill">🧩 Governed skill</button>
       <button class="scenario hot" id="sc-attack">🛑 Unsigned-manifest attack</button>
       <button class="export" id="btn-export">⬇ Export evidence</button>
       <button class="ghost" id="sc-reset">↺ Reset</button>
@@ -269,6 +270,9 @@ button.export:hover { background: rgba(63,185,80,0.2); }
             <option value="approval_requested">approval_requested</option>
             <option value="approval_resolved">approval_resolved</option>
             <option value="confidence_verdict">confidence_verdict</option>
+            <option value="skill_loaded">skill_loaded</option>
+            <option value="skill_skipped">skill_skipped</option>
+            <option value="conformance_verdict">conformance_verdict</option>
           </select>
           <select id="f-outcome">
             <option value="">All outcomes</option>
@@ -343,6 +347,12 @@ const GOVERNED_TARGETS = [
   { path: "docs/runbooks/rotate-keys.md", unit: "key-rotation", task: "rotate signing keys" },
 ];
 const GOVERNED_TOOLS = ["Read", "Write", "Grep", "WebFetch"];
+const GOVERNED_SKILLS = [
+  { id: "restart-web-service", granted: true, scope: "/opt/web-service", outOfScope: "/opt/billing-service" },
+  { id: "deploy-canary", granted: true, scope: "deploy/canary/*", outOfScope: "deploy/prod/*" },
+  { id: "rotate-signing-keys", granted: false },
+  { id: "purge-customer-data", granted: false },
+];
 
 // ---- State ----------------------------------------------------------------
 const stats = { sessions: 0, events: 0, governed: 0, blocked: 0, budgetExceeded: 0, drifts: 0, signatureBlocked: 0 };
@@ -433,6 +443,35 @@ function genEvent(s) {
     return { session: s, type: "confidence_verdict", tool: "harness_assess", target: t.path,
              outcome: "blocked",
              reason: `confidence ${score} < threshold 0.7 on critical task — routed to account-owner` };
+  }
+
+  // Governed skill invocation: skill_eligibility gate (kcp-agent v0.16.0) runs
+  // before a kind: skill call ever reaches the downstream tool. Eligible →
+  // loaded, and its action_scope binds every later governed call this session
+  // (procedural conformance, #39). Ineligible → refused, fail-closed.
+  if (bias === "skill" || (!bias && roll < 0.17)) {
+    const sk = pick(GOVERNED_SKILLS);
+    s.governed++;
+    if (!sk.granted) {
+      return { session: s, type: "skill_skipped", tool: "skill-gate", target: sk.id,
+               outcome: "blocked", skill: true,
+               reason: `kind: skill not invoke-eligible: no explicit eligibility grant` };
+    }
+    s.activeSkill = sk;
+    burst.push((sx) => {
+      const outOfScope = Math.random() < 0.3;
+      if (!outOfScope) {
+        return { session: sx, type: "conformance_verdict", tool: "conformance-gate", target: sk.scope,
+                  outcome: "approved", conformance: true,
+                  reason: `action within active skill "${sk.id}"'s declared action_scope (${sk.scope})` };
+      }
+      return { session: sx, type: "conformance_verdict", tool: "conformance-gate", target: sk.outOfScope,
+                outcome: "blocked", conformance: true,
+                reason: `action outside active skill "${sk.id}"'s action_scope (${sk.scope}) — held for review` };
+    });
+    return { session: s, type: "skill_loaded", tool: "skill-gate", target: sk.id,
+             outcome: "approved", skill: true,
+             reason: `kind: skill with explicit eligibility grant — action_scope now binds this session` };
   }
 
   // KCP tool — passes through, it IS the governance layer
@@ -685,6 +724,7 @@ $("agents-dn").onclick = () => { targetAgents = Math.max(1, targetAgents - 1); $
 $("sc-drift").onclick = () => { burst.push("drift", "invalidate"); flashBtn("sc-drift"); };
 $("sc-budget").onclick = () => { scenarioBias = { type: "budget", until: Date.now() + 4000 }; flashBtn("sc-budget"); };
 $("sc-approval").onclick = () => { scenarioBias = { type: "approval", until: Date.now() + 3000 }; flashBtn("sc-approval"); };
+$("sc-skill").onclick = () => { scenarioBias = { type: "skill", until: Date.now() + 4000 }; flashBtn("sc-skill"); };
 $("sc-attack").onclick = () => { scenarioBias = { type: "attack", until: Date.now() + 4000 }; flashBtn("sc-attack"); };
 $("sc-reset").onclick = () => {
   Object.keys(stats).forEach((k) => stats[k] = 0);
