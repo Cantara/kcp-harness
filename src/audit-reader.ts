@@ -57,6 +57,24 @@ export interface SessionIndex {
   sessions: SessionEntry[];
 }
 
+/**
+ * A decision-record chain (#34): every audit event sharing one correlation id —
+ * the full verdict cascade (govern → grounding → confidence → approval → skill)
+ * for a single intercepted tool call, in sequence order.
+ */
+export interface DecisionChain {
+  /** The correlation id shared by every event in the chain. */
+  correlationId: string;
+  /** The upstream W3C parent span-id, when the chain descends from one. */
+  parentId?: string;
+  /** The session this chain belongs to. */
+  sessionId: string;
+  /** Chain events, sorted by monotonic sequence. */
+  events: AuditEvent[];
+  /** Whether any event in the chain was blocked. */
+  blocked: boolean;
+}
+
 /** Streaming JSONL audit log reader. */
 export class AuditReader {
   constructor(private readonly path: string) {}
@@ -158,6 +176,50 @@ export class AuditReader {
     }
 
     return { sessions: Array.from(sessions.values()) };
+  }
+
+  /**
+   * Reconstruct every decision-record chain in the log: events grouped by
+   * correlation id, each chain's events sorted by sequence. Events without a
+   * correlation id (pre-#34 records, or lifecycle events) are omitted — a chain
+   * is defined by a shared correlation id. Optionally scoped by filter.
+   */
+  async chains(filter?: AuditFilter): Promise<DecisionChain[]> {
+    const groups = new Map<string, DecisionChain>();
+
+    for await (const event of this.stream(filter)) {
+      const id = event.correlationId;
+      if (!id) continue;
+      let chain = groups.get(id);
+      if (!chain) {
+        chain = {
+          correlationId: id,
+          parentId: event.parentId,
+          sessionId: event.sessionId,
+          events: [],
+          blocked: false,
+        };
+        groups.set(id, chain);
+      }
+      if (!chain.parentId && event.parentId) chain.parentId = event.parentId;
+      chain.events.push(event);
+      if (event.outcome === "blocked") chain.blocked = true;
+    }
+
+    for (const chain of groups.values()) {
+      chain.events.sort((a, b) => a.sequence - b.sequence);
+    }
+    return Array.from(groups.values());
+  }
+
+  /**
+   * Reconstruct a single decision-record chain by its correlation id — the
+   * verdict cascade for one tool call, in sequence order. Returns undefined
+   * when no event carries that id.
+   */
+  async decisionChain(correlationId: string): Promise<DecisionChain | undefined> {
+    const chains = await this.chains();
+    return chains.find((c) => c.correlationId === correlationId);
   }
 
   /** Check if the audit log file exists. */

@@ -160,6 +160,58 @@ describe("AuditReader.sessionIndex", () => {
   });
 });
 
+describe("AuditReader.chains / decisionChain", () => {
+  it("groups events by correlation id, sorted by sequence", async () => {
+    writeLog([
+      makeEvent({ correlationId: "corr-A", type: "tool_call", sequence: 3 }),
+      makeEvent({ correlationId: "corr-A", type: "approval_requested", sequence: 1 }),
+      makeEvent({ correlationId: "corr-A", type: "confidence_verdict", sequence: 2 }),
+      makeEvent({ correlationId: "corr-B", type: "tool_call", sequence: 4 }),
+      makeEvent({ type: "session_start", sequence: 5 }), // no correlationId → omitted
+    ]);
+    const reader = new AuditReader(LOG_PATH);
+    const chains = await reader.chains();
+
+    expect(chains).toHaveLength(2);
+    const a = chains.find((c) => c.correlationId === "corr-A")!;
+    expect(a.events.map((e) => e.sequence)).toEqual([1, 2, 3]);
+    expect(a.events.map((e) => e.type)).toEqual([
+      "approval_requested",
+      "confidence_verdict",
+      "tool_call",
+    ]);
+  });
+
+  it("reconstructs a single chain and flags blocked", async () => {
+    writeLog([
+      makeEvent({ correlationId: "corr-X", type: "tool_call", outcome: "approved", sequence: 1 }),
+      makeEvent({ correlationId: "corr-X", type: "skill_skipped", outcome: "blocked", sequence: 2 }),
+      makeEvent({ correlationId: "corr-Y", type: "tool_call", outcome: "approved", sequence: 3 }),
+    ]);
+    const reader = new AuditReader(LOG_PATH);
+
+    const x = await reader.decisionChain("corr-X");
+    expect(x).toBeDefined();
+    expect(x!.events).toHaveLength(2);
+    expect(x!.blocked).toBe(true);
+
+    const y = await reader.decisionChain("corr-Y");
+    expect(y!.blocked).toBe(false);
+
+    expect(await reader.decisionChain("nope")).toBeUndefined();
+  });
+
+  it("carries the W3C parent span-id onto the chain", async () => {
+    writeLog([
+      makeEvent({ correlationId: "corr-P", parentId: "00f067aa0ba902b7", sequence: 1 }),
+      makeEvent({ correlationId: "corr-P", sequence: 2 }),
+    ]);
+    const reader = new AuditReader(LOG_PATH);
+    const p = await reader.decisionChain("corr-P");
+    expect(p!.parentId).toBe("00f067aa0ba902b7");
+  });
+});
+
 describe("AuditReader metadata", () => {
   it("reports existence correctly", () => {
     writeLog([makeEvent()]);

@@ -15,7 +15,8 @@
 import { createInterface } from "node:readline";
 import type { HarnessConfig } from "./config.js";
 import { classify } from "./classifier.js";
-import { govern, type GovernanceDecision, type ApprovalContext } from "./governor.js";
+import { govern, assessSkillEligibility, type GovernanceDecision, type ApprovalContext } from "./governor.js";
+import { deriveCorrelation } from "./correlation.js";
 import { providerFromConfig, latestForCall, newRequest, parseDuration, type ApprovalProvider } from "./approval.js";
 import { assess } from "kcp-agent";
 import {
@@ -27,6 +28,7 @@ import {
   buildDriftEvent,
   buildApprovalEvent,
   buildConfidenceEvent,
+  buildSkillEvent,
   type AuditWriter,
   type AuditEvent,
 } from "./audit.js";
@@ -313,6 +315,10 @@ export class HarnessProxy {
   ): Promise<object> {
     const startTime = Date.now();
     const seq = nextSequence(this.session);
+    // One decision-record chain id per tool call — reused from an incoming W3C
+    // traceparent when present, else minted. Every verdict this call emits
+    // (govern, approval, skill, execute) carries it so the chain reconstructs.
+    const { correlationId, parentId } = deriveCorrelation(args);
 
     try {
       // Step 1: Classify
@@ -322,9 +328,11 @@ export class HarnessProxy {
         this.config.governance.domains,
       );
 
-      // Step 2: Govern (for governed calls)
+      // Step 2: Govern (for governed calls). Skill invocations skip the generic
+      // path/plan governor — they are adjudicated by the skill_eligibility gate
+      // in Step 3 instead (a skill id is not a file path to plan against).
       let governance: GovernanceDecision | undefined;
-      if (classification.governed) {
+      if (classification.governed && !classification.skill) {
         governance = await govern(
           classification,
           toolName,
@@ -339,7 +347,7 @@ export class HarnessProxy {
           const status = await this.approvals.provider.check(governance.pendingId);
           if (status) {
             this.audit.emit(
-              buildApprovalEvent(this.session.id, nextSequence(this.session), "approval_requested", status),
+              buildApprovalEvent(this.session.id, nextSequence(this.session), "approval_requested", status, correlationId),
             );
           }
         }
@@ -355,6 +363,9 @@ export class HarnessProxy {
             governance,
             "blocked",
             Date.now() - startTime,
+            undefined,
+            correlationId,
+            parentId,
           );
           this.audit.emit(event);
 
@@ -371,11 +382,54 @@ export class HarnessProxy {
       }
 
       // Step 3: Execute
+
+      // Skill/procedure gate (#100): a governed skill invocation is run through
+      // the planner's skill_eligibility gate before it may execute. Fail-closed —
+      // an ineligible skill is refused with the gate's written reason and never
+      // reaches the downstream tool.
+      if (classification.skill && classification.domain) {
+        const skillGate = await assessSkillEligibility(
+          classification.domain,
+          classification.skillId,
+          this.session,
+          this.config.governance.policy,
+        );
+
+        if (!skillGate.eligible) {
+          this.audit.emit(
+            buildSkillEvent(this.session.id, seq, false, {
+              id: skillGate.skillId,
+              reason: skillGate.reason,
+              manifest: classification.domain.manifest,
+              gate: skillGate.gate,
+              actionScope: skillGate.actionScope,
+            }, correlationId),
+          );
+          return rpcResult(id, {
+            content: [
+              { type: "text", text: `[kcp-harness] SKILL BLOCKED: ${skillGate.reason}` },
+            ],
+            isError: true,
+          });
+        }
+
+        // Eligible — record the load, then fall through to execute the skill.
+        this.audit.emit(
+          buildSkillEvent(this.session.id, nextSequence(this.session), true, {
+            id: skillGate.skillId,
+            reason: skillGate.reason,
+            manifest: classification.domain.manifest,
+            gate: skillGate.gate,
+            actionScope: skillGate.actionScope,
+          }, correlationId),
+        );
+      }
+
       let result: unknown;
 
       if (HARNESS_TOOLS.some((t) => t.name === toolName)) {
         // Harness-internal tool
-        result = await this.handleHarnessTool(toolName, args);
+        result = await this.handleHarnessTool(toolName, args, correlationId);
       } else if (KCP_TOOLS.has(toolName)) {
         // KCP tool — delegate to kcp-agent via the bridge
         const text = await callKcpTool(toolName, args);
@@ -399,6 +453,9 @@ export class HarnessProxy {
           governance,
           outcome,
           Date.now() - startTime,
+          undefined,
+          correlationId,
+          parentId,
         );
         this.audit.emit(event);
       }
@@ -419,6 +476,8 @@ export class HarnessProxy {
         "error",
         Date.now() - startTime,
         msg,
+        correlationId,
+        parentId,
       );
       this.audit.emit(event);
 
@@ -453,6 +512,7 @@ export class HarnessProxy {
   private async handleHarnessTool(
     name: string,
     _args: Record<string, unknown>,
+    correlationId?: string,
   ): Promise<{ content: Array<{ type: string; text: string }>; isError: boolean }> {
     switch (name) {
       case "harness_status": {
@@ -529,7 +589,7 @@ export class HarnessProxy {
         // Emit drift audit events for any drifted plans
         for (const drift of watchResult.drifted) {
           const driftSeq = nextSequence(this.session);
-          this.audit.emit(buildDriftEvent(this.session.id, driftSeq, drift));
+          this.audit.emit(buildDriftEvent(this.session.id, driftSeq, drift, correlationId));
         }
 
         return {
@@ -587,7 +647,7 @@ export class HarnessProxy {
       }
 
       case "harness_assess":
-        return this.handleAssess(_args);
+        return this.handleAssess(_args, correlationId);
 
       default:
         return {
@@ -605,6 +665,7 @@ export class HarnessProxy {
    */
   private async handleAssess(
     args: Record<string, unknown>,
+    correlationId?: string,
   ): Promise<{ content: Array<{ type: string; text: string }>; isError: boolean }> {
     const err = (text: string) => ({ content: [{ type: "text", text }], isError: true });
     const ok = (body: unknown) => ({
@@ -679,7 +740,7 @@ export class HarnessProxy {
         const status = await provider.check(request.id);
         if (status) {
           this.audit.emit(
-            buildApprovalEvent(this.session.id, nextSequence(this.session), "approval_requested", status),
+            buildApprovalEvent(this.session.id, nextSequence(this.session), "approval_requested", status, correlationId),
           );
         }
         ticketInfo = ticketSummary(request.id, "pending_review", routing.route_to_role!);
@@ -693,6 +754,7 @@ export class HarnessProxy {
         task,
         verdict,
         ticketInfo ? (ticketInfo["id"] as string) : undefined,
+        correlationId,
       ),
     );
 

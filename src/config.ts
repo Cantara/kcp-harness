@@ -17,6 +17,13 @@ export interface GovernedDomain {
   urls?: string[];
   /** Specific tool names that are always governed in this domain. */
   tools?: string[];
+  /**
+   * Tool names that invoke a governed skill/procedure in this domain (#100). A
+   * call to one of these is classified as a skill invocation: it is run through
+   * the planner's `skill_eligibility` gate against this domain's manifest before
+   * it may execute (fail-closed).
+   */
+  skills?: string[];
 }
 
 /** Governance policy — what happens when a governed domain is accessed. */
@@ -248,6 +255,7 @@ function parseDomains(raw: unknown): GovernedDomain[] {
     paths: Array.isArray(d["paths"]) ? d["paths"].map(String) : undefined,
     urls: Array.isArray(d["urls"]) ? d["urls"].map(String) : undefined,
     tools: Array.isArray(d["tools"]) ? d["tools"].map(String) : undefined,
+    skills: Array.isArray(d["skills"]) ? d["skills"].map(String) : undefined,
   }));
 }
 

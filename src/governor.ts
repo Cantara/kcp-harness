@@ -31,6 +31,7 @@ import {
   type FollowOptions,
   type SignatureResult,
 } from "kcp-agent";
+import type { GateVerdict } from "kcp-agent";
 import type { GovernancePolicy, GovernedDomain, ApprovalRule } from "./config.js";
 import type { Classification } from "./classifier.js";
 import { matchesPrefix } from "./classifier.js";
@@ -425,4 +426,89 @@ function pathOverlaps(target: string, unitPath: string): boolean {
   const a = normalizePath(target);
   const b = normalizePath(unitPath);
   return a === b || a.endsWith("/" + b) || a.endsWith(b) || b.endsWith("/" + a);
+}
+
+// -- Skill/procedure eligibility (#100) --------------------------------------
+
+/** The planner's skill_eligibility verdict for a governed skill invocation. */
+export interface SkillEligibility {
+  /** Whether the skill_eligibility gate admitted the skill (fail-closed). */
+  eligible: boolean;
+  /** The written reason — the deciding gate's `detail`, never reconstructed. */
+  reason: string;
+  /** The gate that decided (skill_eligibility, or the earlier gate that rejected). */
+  gate: string;
+  /** The skill unit id that was gated. */
+  skillId: string;
+  /** The skill's declared action scope, when the unit declares one. */
+  actionScope?: { tools?: string[]; paths?: string[]; capabilities?: string[] };
+}
+
+/**
+ * Run a governed skill invocation through the planner's `skill_eligibility`
+ * gate. Reuses the same deterministic kcp-agent planner the governor uses: it
+ * loads the domain's manifest, traces the skill task, and reads the
+ * skill_eligibility verdict for the named unit.
+ *
+ * Fail-closed everywhere: no skill id, an unknown unit, a unit that isn't
+ * `kind: skill`, a manifest error, or a gate that did not explicitly pass all
+ * yield `eligible: false` with a specific reason. A skill unit that was
+ * rejected by an earlier gate never reaches skill_eligibility in the trace —
+ * that earlier gate's detail becomes the reason.
+ */
+export async function assessSkillEligibility(
+  domain: GovernedDomain,
+  skillId: string | undefined,
+  session: SessionState,
+  policy: GovernancePolicy,
+): Promise<SkillEligibility> {
+  if (!skillId) {
+    return { eligible: false, reason: "skill invocation carries no skill id — blocked", gate: "skill_eligibility", skillId: "" };
+  }
+  if (!domain.manifest) {
+    return { eligible: false, reason: "governed skill domain has no manifest — blocked", gate: "skill_eligibility", skillId };
+  }
+
+  const manifest = await loadManifest(domain.manifest);
+  const unit = manifest.units.find((u) => u.id === skillId);
+  if (!unit) {
+    return { eligible: false, reason: `no unit "${skillId}" in ${domain.manifest}`, gate: "skill_eligibility", skillId };
+  }
+  if (unit.kind !== "skill") {
+    return { eligible: false, reason: `unit "${skillId}" is not kind: skill — not invoke-eligible`, gate: "skill_eligibility", skillId, actionScope: unit.action_scope };
+  }
+
+  // Trace the skill against its own intent so the relevance gate matches and
+  // the skill_eligibility verdict is the deciding one. The task is the unit's
+  // declared purpose — the skill is what we are gating, not an arbitrary query.
+  const options = buildFollowOptions(policy, session).planOptions;
+  const task = unit.intent || `invoke skill ${skillId}`;
+  const dt = traceDecision(manifest, task, options);
+  const ut = dt.units.find((u) => u.id === skillId);
+
+  if (!ut) {
+    return { eligible: false, reason: `skill "${skillId}" produced no trace verdict — blocked`, gate: "skill_eligibility", skillId, actionScope: unit.action_scope };
+  }
+
+  const skillGate: GateVerdict | undefined = ut.gates.find((g) => g.gate === "skill_eligibility");
+  const rejecting: GateVerdict | undefined = ut.rejectedBy ? ut.gates.find((g) => g.gate === ut.rejectedBy) : undefined;
+
+  // Fail-closed authority: a skill is invoke-eligible only when the planner
+  // admits its unit as load-eligible (`load_eligible: true`). The gate's
+  // per-unit `passed` flag is contextual — it blocks selection only under
+  // strict mode — so the plan's `loadEligible` is the honest signal. The
+  // skill_eligibility gate still supplies the written reason; if an earlier
+  // gate rejected the unit, that gate's detail is the reason.
+  const planned = dt.plan.selected.find((u) => u.id === skillId);
+  const eligible = planned?.loadEligible === true;
+  const deciding = skillGate ?? rejecting;
+  const reason = deciding?.detail ?? `skill "${skillId}" has no skill_eligibility verdict — blocked`;
+
+  return {
+    eligible,
+    reason,
+    gate: deciding?.gate ?? "skill_eligibility",
+    skillId,
+    actionScope: unit.action_scope,
+  };
 }

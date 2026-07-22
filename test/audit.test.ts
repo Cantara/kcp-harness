@@ -5,6 +5,7 @@ import {
   buildLifecycleEvent,
   buildBudgetEvent,
   buildDriftEvent,
+  buildSkillEvent,
   type AuditEvent,
 } from "../src/audit.js";
 import type { Classification } from "../src/classifier.js";
@@ -203,6 +204,64 @@ describe("buildDriftEvent", () => {
     expect(event.drift!.manifest).toBe("./knowledge.yaml");
     expect(event.drift!.movedUnits).toBe(1);
     expect(event.drift!.newPlanAsOf).toBe("2026-07-07");
+  });
+});
+
+describe("correlationId threading", () => {
+  const classification: Classification = { governed: true, reason: "test" };
+
+  it("stamps correlationId + parentId onto a tool_call event", () => {
+    const event = buildEvent(
+      "s1", 1, "Read", { file_path: "docs/api.md" }, classification, undefined,
+      "approved", 10, undefined, "corr-1", "span-parent",
+    );
+    expect(event.correlationId).toBe("corr-1");
+    expect(event.parentId).toBe("span-parent");
+  });
+
+  it("omits the fields entirely when no correlationId is supplied (backward-compatible)", () => {
+    const event = buildEvent("s1", 1, "Read", {}, classification, undefined, "approved", 10);
+    expect("correlationId" in event).toBe(false);
+    expect("parentId" in event).toBe(false);
+  });
+
+  it("threads correlationId through the sibling builders", () => {
+    const life = buildLifecycleEvent("s1", 1, "session_start", { domains: 1 }, "corr-2");
+    expect(life.correlationId).toBe("corr-2");
+
+    const budget = buildBudgetEvent("s1", 2, true,
+      { totals: { USDC: 0 }, remaining: 1, entryCount: 0, ceiling: { amount: 1, currency: "USDC" } },
+      undefined, "corr-2");
+    expect(budget.correlationId).toBe("corr-2");
+  });
+});
+
+describe("buildSkillEvent", () => {
+  it("creates a skill_loaded event for an eligible skill", () => {
+    const event = buildSkillEvent("s1", 7, true, {
+      id: "deploy-skill",
+      reason: "kind: skill with explicit eligibility grant",
+      manifest: "./knowledge.yaml",
+      actionScope: { tools: ["Bash"], paths: ["infra/"] },
+    }, "corr-9");
+
+    expect(event.type).toBe("skill_loaded");
+    expect(event.outcome).toBe("approved");
+    expect(event.skill!.id).toBe("deploy-skill");
+    expect(event.skill!.eligible).toBe(true);
+    expect(event.skill!.gate).toBe("skill_eligibility");
+    expect(event.skill!.actionScope?.tools).toEqual(["Bash"]);
+    expect(event.correlationId).toBe("corr-9");
+  });
+
+  it("creates a fail-closed skill_skipped event for an ineligible skill", () => {
+    const event = buildSkillEvent("s1", 8, false, {
+      id: "rotate-secrets-skill",
+      reason: "kind: skill not invoke-eligible: no explicit eligibility grant",
+    });
+    expect(event.type).toBe("skill_skipped");
+    expect(event.outcome).toBe("blocked");
+    expect(event.skill!.eligible).toBe(false);
   });
 });
 

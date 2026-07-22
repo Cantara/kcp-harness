@@ -1,0 +1,39 @@
+# Skill/procedure test fixture (#100). Local, no serving/federation block so
+# the planner needs no network. Two skills: one granted, one fail-closed.
+kcp_version: "0.25"
+project: skill-fixture
+version: 1.0.0
+updated: "2026-07-17"
+language: en
+
+units:
+  - id: deploy-skill
+    path: skills/deploy.md
+    kind: skill
+    intent: "Deploy the service to production safely"
+    scope: module
+    audience: [agent]
+    triggers: [deploy, release, production]
+    load_eligible: true
+    action_scope:
+      tools: [Bash]
+      paths: [infra/]
+      capabilities: [deploy]
+
+  - id: rotate-secrets-skill
+    path: skills/rotate-secrets.md
+    kind: skill
+    intent: "Rotate production secrets during a deploy"
+    scope: module
+    audience: [agent]
+    triggers: [deploy, release, production, rotate, secret]
+    action_scope:
+      tools: [Bash]
+      paths: [secrets/]
+
+  - id: deploy-runbook
+    path: docs/deploy-runbook.md
+    intent: "Human-readable deploy runbook documentation"
+    scope: module
+    audience: [agent, human]
+    triggers: [deploy, runbook, docs]
