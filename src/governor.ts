@@ -32,6 +32,8 @@ import {
   type SignatureResult,
 } from "kcp-agent";
 import type { GateVerdict } from "kcp-agent";
+import { readFileSync } from "node:fs";
+import yaml from "js-yaml";
 import type { GovernancePolicy, GovernedDomain, ApprovalRule } from "./config.js";
 import type { Classification } from "./classifier.js";
 import { matchesPrefix } from "./classifier.js";
@@ -441,7 +443,12 @@ export interface SkillEligibility {
   /** The skill unit id that was gated. */
   skillId: string;
   /** The skill's declared action scope, when the unit declares one. */
-  actionScope?: { tools?: string[]; paths?: string[]; capabilities?: string[] };
+  actionScope?: {
+    tools?: string[];
+    paths?: string[];
+    capabilities?: string[];
+    spend?: { max_spend?: number; allowed_vendors?: string[]; currency?: string };
+  };
 }
 
 /**
@@ -456,6 +463,40 @@ export interface SkillEligibility {
  * rejected by an earlier gate never reaches skill_eligibility in the trace —
  * that earlier gate's detail becomes the reason.
  */
+/**
+ * Recover a unit's `action_scope.spend` envelope from the raw manifest (#139).
+ * kcp-agent's parser preserves only tools/paths/capabilities under action_scope,
+ * so the spend allowlist — frozen as `action_scope.spend { max_spend,
+ * allowed_vendors, currency }` — is read back from the source YAML and merged
+ * onto the parsed scope. Best-effort and fail-safe: an unreadable manifest (e.g.
+ * a remote URL) or an absent spend block simply yields the base scope unchanged.
+ */
+function withSpendScope(
+  base: { tools?: string[]; paths?: string[]; capabilities?: string[] } | undefined,
+  manifestPath: string,
+  skillId: string,
+): SkillEligibility["actionScope"] {
+  try {
+    const raw = yaml.load(readFileSync(manifestPath, "utf-8")) as
+      | { units?: Array<Record<string, unknown>> }
+      | undefined;
+    const unit = raw?.units?.find((u) => u["id"] === skillId);
+    const scope = unit && typeof unit["action_scope"] === "object" ? (unit["action_scope"] as Record<string, unknown>) : undefined;
+    const spendRaw = scope && typeof scope["spend"] === "object" ? (scope["spend"] as Record<string, unknown>) : undefined;
+    if (!spendRaw) return base;
+
+    const spend: { max_spend?: number; allowed_vendors?: string[]; currency?: string } = {};
+    if (typeof spendRaw["max_spend"] === "number") spend.max_spend = spendRaw["max_spend"] as number;
+    if (Array.isArray(spendRaw["allowed_vendors"])) spend.allowed_vendors = (spendRaw["allowed_vendors"] as unknown[]).map(String);
+    if (typeof spendRaw["currency"] === "string") spend.currency = spendRaw["currency"] as string;
+
+    if (spend.max_spend === undefined && spend.allowed_vendors === undefined && spend.currency === undefined) return base;
+    return { ...(base ?? {}), spend };
+  } catch {
+    return base;
+  }
+}
+
 export async function assessSkillEligibility(
   domain: GovernedDomain,
   skillId: string | undefined,
@@ -474,8 +515,10 @@ export async function assessSkillEligibility(
   if (!unit) {
     return { eligible: false, reason: `no unit "${skillId}" in ${domain.manifest}`, gate: "skill_eligibility", skillId };
   }
+  // Merge back the spend envelope kcp-agent's parser drops (#139).
+  const actionScope = withSpendScope(unit.action_scope, domain.manifest, skillId);
   if (unit.kind !== "skill") {
-    return { eligible: false, reason: `unit "${skillId}" is not kind: skill — not invoke-eligible`, gate: "skill_eligibility", skillId, actionScope: unit.action_scope };
+    return { eligible: false, reason: `unit "${skillId}" is not kind: skill — not invoke-eligible`, gate: "skill_eligibility", skillId, actionScope };
   }
 
   // Trace the skill against its own intent so the relevance gate matches and
@@ -487,7 +530,7 @@ export async function assessSkillEligibility(
   const ut = dt.units.find((u) => u.id === skillId);
 
   if (!ut) {
-    return { eligible: false, reason: `skill "${skillId}" produced no trace verdict — blocked`, gate: "skill_eligibility", skillId, actionScope: unit.action_scope };
+    return { eligible: false, reason: `skill "${skillId}" produced no trace verdict — blocked`, gate: "skill_eligibility", skillId, actionScope };
   }
 
   const skillGate: GateVerdict | undefined = ut.gates.find((g) => g.gate === "skill_eligibility");
@@ -509,6 +552,6 @@ export async function assessSkillEligibility(
     reason,
     gate: deciding?.gate ?? "skill_eligibility",
     skillId,
-    actionScope: unit.action_scope,
+    actionScope,
   };
 }

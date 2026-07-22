@@ -32,6 +32,20 @@ export interface ActionScope {
   tools?: string[];
   paths?: string[];
   capabilities?: string[];
+  /**
+   * Spend authority for a governed procedure that transacts value (#139). A
+   * PURCHASE action is held unless its vendor, currency, and amount all fall
+   * within the declared envelope. Each sub-field is an independent allowlist:
+   * an omitted sub-field does not constrain that facet.
+   */
+  spend?: {
+    /** Maximum single-purchase amount, in `currency`. */
+    max_spend?: number;
+    /** Allowlist of vendors this skill may transact with. */
+    allowed_vendors?: string[];
+    /** The only currency this skill may spend in. */
+    currency?: string;
+  };
 }
 
 /**
@@ -48,6 +62,20 @@ export interface ObservedAction {
   urls?: string[];
   /** Capabilities the action asserts, when the caller can name them. */
   capabilities?: string[];
+  /**
+   * A purchase the action performs — a governed spend of value (#139). Present
+   * only for a buy: the vendor paid, the amount, and the currency. When set and
+   * the active skill declares `spend`, the purchase is checked against that
+   * envelope (vendor allowlist, currency, max_spend).
+   */
+  purchase?: {
+    /** The vendor being paid. */
+    vendor: string;
+    /** The amount being spent, in `currency`. */
+    amount: number;
+    /** The currency of the amount. */
+    currency: string;
+  };
 }
 
 /**
@@ -74,6 +102,10 @@ export interface ConformanceVerdict {
     scopePaths?: string[];
     /** The skill's authorized capabilities, pinned. */
     scopeCapabilities?: string[];
+    /** The skill's declared spend envelope, pinned when a purchase was checked (#139). */
+    scopeSpend?: { max_spend?: number; allowed_vendors?: string[]; currency?: string };
+    /** The purchase the action performed, pinned when one was checked (#139). */
+    purchase?: { vendor: string; amount: number; currency: string };
   };
 }
 
@@ -81,10 +113,25 @@ function isNonEmpty(a: string[] | undefined): a is string[] {
   return Array.isArray(a) && a.length > 0;
 }
 
+/** A spend envelope is declared when at least one of its sub-fields is present. */
+function spendDeclared(spend: ActionScope["spend"]): spend is NonNullable<ActionScope["spend"]> {
+  if (!spend || typeof spend !== "object") return false;
+  return (
+    typeof spend.max_spend === "number" ||
+    isNonEmpty(spend.allowed_vendors) ||
+    typeof spend.currency === "string"
+  );
+}
+
 /** A scope is parseable when it declares at least one dimension. */
 function hasScope(scope: ActionScope | undefined | null): scope is ActionScope {
   if (!scope || typeof scope !== "object") return false;
-  return isNonEmpty(scope.tools) || isNonEmpty(scope.paths) || isNonEmpty(scope.capabilities);
+  return (
+    isNonEmpty(scope.tools) ||
+    isNonEmpty(scope.paths) ||
+    isNonEmpty(scope.capabilities) ||
+    spendDeclared(scope.spend)
+  );
 }
 
 /** A target with a URL scheme (http://, https://, …) is matched by raw prefix. */
@@ -126,6 +173,8 @@ export function checkConformance(action: ObservedAction, scope: ActionScope): Co
     scopeTools: scope?.tools,
     scopePaths: scope?.paths,
     scopeCapabilities: scope?.capabilities,
+    ...(spendDeclared(scope?.spend) ? { scopeSpend: scope!.spend } : {}),
+    ...(action.purchase ? { purchase: action.purchase } : {}),
   };
 
   // Fail-closed: an absent or unparseable scope authorizes nothing.
@@ -177,7 +226,54 @@ export function checkConformance(action: ObservedAction, scope: ActionScope): Co
     }
   }
 
-  const checked = targets[0] ?? action.tool;
+  // Spend dimension (#139) — a purchase is an allowlist over vendor, currency,
+  // and amount. A buy requires explicit spend authority: a scope that declares
+  // no `spend` envelope grants none, so the purchase is held fail-closed even
+  // when the skill authorized the buying tool. When the envelope is present,
+  // each facet is checked only if the skill declares it; the first violation
+  // holds the buy with a written reason naming the deciding facet.
+  if (action.purchase) {
+    const { vendor, amount, currency } = action.purchase;
+
+    if (!spendDeclared(scope.spend)) {
+      return {
+        gate: "conformance",
+        passed: false,
+        reason: `purchase of ${amount} ${currency} to "${vendor}" but the active skill declares no spend authority — fail-closed`,
+        evidence: { ...pins, target: vendor },
+      };
+    }
+    const s = scope.spend;
+
+    if (isNonEmpty(s.allowed_vendors) && !s.allowed_vendors.includes(vendor)) {
+      return {
+        gate: "conformance",
+        passed: false,
+        reason: `vendor "${vendor}" is outside the skill's authorized vendors [${s.allowed_vendors.join(", ")}]`,
+        evidence: { ...pins, target: vendor },
+      };
+    }
+
+    if (typeof s.currency === "string" && currency !== s.currency) {
+      return {
+        gate: "conformance",
+        passed: false,
+        reason: `currency mismatch: purchase in ${currency}, scope allows ${s.currency}`,
+        evidence: { ...pins, target: currency },
+      };
+    }
+
+    if (typeof s.max_spend === "number" && amount > s.max_spend) {
+      return {
+        gate: "conformance",
+        passed: false,
+        reason: `purchase of ${amount} ${currency} to "${vendor}" exceeds max_spend ${s.max_spend} ${currency}`,
+        evidence: { ...pins, target: vendor },
+      };
+    }
+  }
+
+  const checked = action.purchase?.vendor ?? targets[0] ?? action.tool;
   return {
     gate: "conformance",
     passed: true,

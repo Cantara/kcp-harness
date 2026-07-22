@@ -49,6 +49,14 @@ export {
   type ResolutionSignaturePayload,
 } from "./resolution-signature.js";
 
+export {
+  canonicalPurchaseReceiptPayload,
+  signPurchaseReceipt,
+  verifyPurchaseReceipt,
+  type PurchaseReceiptPayload,
+  type PurchaseReceiptSignature,
+} from "./purchase-receipt.js";
+
 export { runApprovals } from "./approvals-cli.js";
 
 export {
@@ -57,6 +65,7 @@ export {
   buildEvent,
   buildLifecycleEvent,
   buildBudgetEvent,
+  buildPurchaseEvent,
   buildDriftEvent,
   buildApprovalEvent,
   buildConfidenceEvent,

@@ -708,7 +708,8 @@ export class HarnessProxy {
     if (!active) return undefined;
 
     const { paths, urls } = extractTargets(toolName, args);
-    const action: ObservedAction = { tool: toolName, paths, urls };
+    const purchase = detectPurchase(toolName, args);
+    const action: ObservedAction = { tool: toolName, paths, urls, ...(purchase ? { purchase } : {}) };
     const verdict = checkConformance(action, active.scope);
 
     if (verdict.passed) {
@@ -899,6 +900,35 @@ export class HarnessProxy {
 
 function ticketSummary(id: string, state: string, requiredRole: string): Record<string, unknown> {
   return { id, state, requiredRole };
+}
+
+/**
+ * Detect a governed purchase from a tool call (#139) — a buy that spends value.
+ * A call qualifies when its arguments carry a `{ vendor, amount, currency }`
+ * triple (under those names or common synonyms), or when a purchase-shaped tool
+ * (`purchase`/`pay`/`checkout`) presents the same fields. The triple is what the
+ * spend conformance gate adjudicates against the active skill's `action_scope`.
+ * Returns `undefined` when the call is not a purchase — the gate then ignores
+ * spend entirely, so a non-buy is never spuriously held.
+ */
+function detectPurchase(
+  toolName: string,
+  args: Record<string, unknown>,
+): { vendor: string; amount: number; currency: string } | undefined {
+  const s = (v: unknown): string | undefined => (typeof v === "string" && v.length > 0 ? v : undefined);
+  const n = (v: unknown): number | undefined =>
+    typeof v === "number" ? v : typeof v === "string" && v.trim() !== "" && !Number.isNaN(Number(v)) ? Number(v) : undefined;
+
+  const vendor = s(args["vendor"]) ?? s(args["merchant"]) ?? s(args["payee"]) ?? s(args["seller"]);
+  const amount = n(args["amount"]) ?? n(args["total"]) ?? n(args["price"]) ?? n(args["cost"]);
+  const currency = s(args["currency"]) ?? s(args["ccy"]);
+
+  // A purchase is well-formed only when all three facets are present — a partial
+  // shape (or a non-buy tool) is not adjudicated for spend.
+  if (vendor !== undefined && amount !== undefined && currency !== undefined) {
+    return { vendor, amount, currency };
+  }
+  return undefined;
 }
 
 /** Serve the harness proxy over stdio until stdin closes. */
