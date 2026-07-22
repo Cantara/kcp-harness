@@ -216,7 +216,12 @@ async function main(): Promise<void> {
       const config = existsSync(configPath) ? loadConfig(configPath) : null;
       const auditPath = getFlag(args, "--audit") ?? config?.audit.path ?? ".kcp-harness/audit.jsonl";
       const outDir = getFlag(args, "--out") ?? "evidence";
-      const format = (getFlag(args, "--format") ?? "both") as "soc2" | "iso27001" | "both";
+      const format = (getFlag(args, "--format") ?? "both") as
+        | "soc2"
+        | "iso27001"
+        | "iso42001"
+        | "euaiact"
+        | "both";
       const org = getFlag(args, "--org");
       const from = getFlag(args, "--from");
       const to = getFlag(args, "--to");

@@ -1,4 +1,5 @@
-// Compliance evidence export — SOC 2 Type II and ISO 27001 Annex A.
+// Compliance evidence export — SOC 2 Type II, ISO 27001 Annex A,
+// ISO/IEC 42001 (AI management system), and the EU AI Act.
 //
 // Reads the audit JSONL log and produces structured evidence bundles
 // suitable for compliance auditors. The mapping is deterministic: audit
@@ -18,7 +19,7 @@ export interface ExportOptions {
   /** Output directory for evidence bundles. */
   outputDir: string;
   /** Which framework(s) to export. */
-  format: "soc2" | "iso27001" | "both";
+  format: "soc2" | "iso27001" | "iso42001" | "euaiact" | "both";
   /** Optional date range filter. */
   dateRange?: { from: string; to: string };
   /** Organization name for the report header. */
@@ -92,6 +93,16 @@ export async function exportEvidence(options: ExportOptions): Promise<ExportResu
   if (options.format === "iso27001" || options.format === "both") {
     const isoFiles = exportISO27001(options.outputDir, events, summary, options.organization);
     files.push(...isoFiles);
+  }
+
+  if (options.format === "iso42001") {
+    const iso42001Files = exportISO42001(options.outputDir, events, summary, options.organization);
+    files.push(...iso42001Files);
+  }
+
+  if (options.format === "euaiact") {
+    const euaiactFiles = exportEUAIAct(options.outputDir, events, summary, options.organization);
+    files.push(...euaiactFiles);
   }
 
   return { outputDir: options.outputDir, files, summary };
@@ -262,6 +273,179 @@ function exportISO27001(
   return files;
 }
 
+// -- ISO/IEC 42001 (AI Management System — Annex A controls) ------------------
+
+function exportISO42001(
+  outputDir: string,
+  events: AuditEvent[],
+  summary: AuditSummary,
+  org?: string,
+): string[] {
+  const dir = join(outputDir, "iso42001");
+  mkdirSync(dir, { recursive: true });
+  const files: string[] = [];
+
+  // A.6.2.6 — AI system operation and monitoring
+  const a626 = buildControlEvidence(
+    "A.6.2.6",
+    "AI System Operation and Monitoring",
+    "The organization shall define and document the necessary elements to operate and monitor AI systems, including monitoring for anomalous behaviour throughout their operation.",
+    events,
+    (e) => e.type === "temporal_drift" || e.type === "budget_exceeded" || e.outcome === "blocked",
+    (e) => `[${e.type}] ${e.outcome}: ${shortDetail(e)}`,
+  );
+  writeJSON(dir, "A.6.2.6-operation-monitoring.json", a626);
+  files.push("iso42001/A.6.2.6-operation-monitoring.json");
+
+  // A.6.2.8 — AI system recording of event logs
+  const a628 = buildControlEvidence(
+    "A.6.2.8",
+    "AI System Recording of Event Logs",
+    "The organization shall determine at which phases of the AI system life cycle logging of events is enabled, and shall keep records of the AI system's operation as an append-only event log.",
+    events,
+    (e) => e.type === "session_start" || e.type === "session_end",
+    (e) => `session ${e.sessionId}: ${e.type}`,
+  );
+  writeJSON(dir, "A.6.2.8-event-logs.json", a628);
+  files.push("iso42001/A.6.2.8-event-logs.json");
+
+  // A.9.2 — Processes for responsible use of AI systems
+  const a92 = buildControlEvidence(
+    "A.9.2",
+    "Processes for Responsible Use of AI Systems",
+    "The organization shall define and implement processes for the responsible use of AI systems, ensuring that governed operations are subject to access control and policy.",
+    events,
+    (e) => e.type === "tool_call" && e.classification?.governed === true,
+    (e) => `${e.outcome}: ${e.governance?.reason ?? e.toolCall?.name ?? "unknown"}`,
+  );
+  writeJSON(dir, "A.9.2-responsible-use.json", a92);
+  files.push("iso42001/A.9.2-responsible-use.json");
+
+  // A.9.4 — Human oversight of AI systems
+  const a94 = buildControlEvidence(
+    "A.9.4",
+    "Human Oversight of AI Systems",
+    "The organization shall ensure that AI systems can be overseen by humans, including the ability to require human approval before high-impact operations proceed.",
+    events,
+    (e) => e.type === "approval_requested" || e.type === "approval_resolved",
+    (e) => `${e.type} [${e.approval?.state ?? e.outcome}]: ${e.approval?.reviewer ?? e.approval?.requiredRole ?? e.approval?.toolName ?? "pending"}`,
+  );
+  writeJSON(dir, "A.9.4-human-oversight.json", a94);
+  files.push("iso42001/A.9.4-human-oversight.json");
+
+  // A.6.2.4 — AI system verification and validation
+  const a624 = buildControlEvidence(
+    "A.6.2.4",
+    "AI System Verification and Validation",
+    "The organization shall define and document verification and validation measures for AI systems, including adjudication of outputs against confidence thresholds.",
+    events,
+    (e) => e.type === "confidence_verdict",
+    (e) => `${e.confidence?.task ?? "?"} — ${e.confidence?.passed ? "passed" : "failed"} (${e.confidence?.score ?? 0}/${e.confidence?.threshold ?? 0})`,
+  );
+  writeJSON(dir, "A.6.2.4-verification-validation.json", a624);
+  files.push("iso42001/A.6.2.4-verification-validation.json");
+
+  // Summary report
+  const report = generateReport(
+    "ISO/IEC 42001 — AI Management System Evidence Summary",
+    summary,
+    [a626, a628, a92, a94, a624],
+    org,
+  );
+  writeFile(dir, "summary.md", report);
+  files.push("iso42001/summary.md");
+
+  return files;
+}
+
+// -- EU AI Act (Art. 12 record-keeping, Art. 14 human oversight) --------------
+
+function exportEUAIAct(
+  outputDir: string,
+  events: AuditEvent[],
+  summary: AuditSummary,
+  org?: string,
+): string[] {
+  const dir = join(outputDir, "eu-ai-act");
+  mkdirSync(dir, { recursive: true });
+  const files: string[] = [];
+
+  // Article 12(1) — Automatic recording of events (append-only log)
+  const art12log = buildControlEvidence(
+    "Art.12(1)",
+    "Record-Keeping — Automatic Logging",
+    "High-risk AI systems shall technically allow for the automatic recording of events (logs) over the lifetime of the system. Every governance decision is captured as an append-only audit record.",
+    events,
+    (_e) => true,
+    (e) => `[${e.type}] ${e.outcome}: ${shortDetail(e)}`,
+  );
+  writeJSON(dir, "Art.12-1-automatic-logging.json", art12log);
+  files.push("eu-ai-act/Art.12-1-automatic-logging.json");
+
+  // Article 12(2) — Traceability of system operation over its lifecycle
+  const art12trace = buildControlEvidence(
+    "Art.12(2)",
+    "Record-Keeping — Traceability of Operation",
+    "Logging capabilities shall ensure a level of traceability of the AI system's functioning throughout its lifecycle, including session boundaries and any drift that invalidates a plan.",
+    events,
+    (e) => e.type === "session_start" || e.type === "session_end"
+      || e.type === "temporal_drift" || e.type === "plan_invalidated",
+    (e) => e.drift
+      ? `drift in ${e.drift.manifest}: ${e.drift.summary}`
+      : `session ${e.sessionId}: ${e.type}`,
+  );
+  writeJSON(dir, "Art.12-2-traceability.json", art12trace);
+  files.push("eu-ai-act/Art.12-2-traceability.json");
+
+  // Article 14(1) — Human oversight through approval gates
+  const art14gate = buildControlEvidence(
+    "Art.14(1)",
+    "Human Oversight — Approval Gates",
+    "High-risk AI systems shall be designed so they can be effectively overseen by natural persons. Human approval is requested and resolved before gated operations proceed.",
+    events,
+    (e) => e.type === "approval_requested" || e.type === "approval_resolved",
+    (e) => `${e.type} [${e.approval?.state ?? e.outcome}]: ${e.approval?.reviewer ?? e.approval?.requiredRole ?? e.approval?.toolName ?? "pending"}`,
+  );
+  writeJSON(dir, "Art.14-1-approval-gates.json", art14gate);
+  files.push("eu-ai-act/Art.14-1-approval-gates.json");
+
+  // Article 14(4) — Ability to intervene, interrupt or halt the system
+  const art14stop = buildControlEvidence(
+    "Art.14(4)",
+    "Human Oversight — Intervention and Stop",
+    "Oversight measures shall enable the person to intervene or interrupt the system through a stop button or similar. Blocked calls, exceeded budgets and invalidated plans evidence the halt capability.",
+    events,
+    (e) => e.outcome === "blocked" || e.type === "budget_exceeded" || e.type === "plan_invalidated",
+    (e) => `[${e.type}] ${e.outcome}: ${shortDetail(e)}`,
+  );
+  writeJSON(dir, "Art.14-4-intervention-stop.json", art14stop);
+  files.push("eu-ai-act/Art.14-4-intervention-stop.json");
+
+  // Article 14(4)(c) — Correct interpretation of output (confidence adjudication)
+  const art14verify = buildControlEvidence(
+    "Art.14(4)(c)",
+    "Human Oversight — Output Interpretation",
+    "Oversight shall enable the person to correctly interpret the AI system's output. Outputs are adjudicated against confidence thresholds and routed for human review on failure.",
+    events,
+    (e) => e.type === "confidence_verdict",
+    (e) => `${e.confidence?.task ?? "?"} — ${e.confidence?.passed ? "passed" : "failed"} (${e.confidence?.score ?? 0}/${e.confidence?.threshold ?? 0})${e.confidence?.ticketId ? ` → ${e.confidence.ticketId}` : ""}`,
+  );
+  writeJSON(dir, "Art.14-4c-output-interpretation.json", art14verify);
+  files.push("eu-ai-act/Art.14-4c-output-interpretation.json");
+
+  // Summary report
+  const report = generateReport(
+    "EU AI Act — Evidence Summary (Art. 12 Record-Keeping, Art. 14 Human Oversight)",
+    summary,
+    [art12log, art12trace, art14gate, art14stop, art14verify],
+    org,
+  );
+  writeFile(dir, "summary.md", report);
+  files.push("eu-ai-act/summary.md");
+
+  return files;
+}
+
 // -- Helpers ------------------------------------------------------------------
 
 function buildControlEvidence(
@@ -346,6 +530,49 @@ function generateISO27001Report(
   const ctrls = controls as ControlEvidence[];
   const lines: string[] = [
     `# ISO 27001 Annex A — Evidence Summary`,
+    org ? `\n**Organization**: ${org}` : "",
+    `\n**Generated**: ${new Date().toISOString()}`,
+    `**Period**: ${summary.dateRange.first || "N/A"} — ${summary.dateRange.last || "N/A"}`,
+    ``,
+    `## Overview`,
+    ``,
+    `| Metric | Value |`,
+    `|--------|-------|`,
+    `| Sessions | ${summary.sessions} |`,
+    `| Total events | ${summary.events} |`,
+    `| Governed access attempts | ${summary.governed} |`,
+    `| Blocked | ${summary.blocked} |`,
+    `| Budget exceeded | ${summary.budgetExceeded} |`,
+    `| Temporal drifts | ${summary.drifts} |`,
+    `| Signature-blocked | ${summary.signatureBlocked} |`,
+    ``,
+    `## Controls`,
+    ``,
+    `| Control | Name | Evidence Count |`,
+    `|---------|------|---------------|`,
+    ...ctrls.map((c) => `| ${c.controlId} | ${c.controlName} | ${c.evidenceCount} |`),
+    ``,
+    ...ctrls.map((c) => [
+      `### ${c.controlId} — ${c.controlName}`,
+      ``,
+      `> ${c.description}`,
+      ``,
+      `Evidence items: **${c.evidenceCount}**`,
+      ``,
+    ].join("\n")),
+  ];
+  return lines.filter(Boolean).join("\n") + "\n";
+}
+
+/** Generic evidence-summary report generator (title + controls table + per-control sections). */
+function generateReport(
+  title: string,
+  summary: AuditSummary,
+  ctrls: ControlEvidence[],
+  org?: string,
+): string {
+  const lines: string[] = [
+    `# ${title}`,
     org ? `\n**Organization**: ${org}` : "",
     `\n**Generated**: ${new Date().toISOString()}`,
     `**Period**: ${summary.dateRange.first || "N/A"} — ${summary.dateRange.last || "N/A"}`,
