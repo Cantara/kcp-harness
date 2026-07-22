@@ -23,6 +23,11 @@ import { randomUUID } from "node:crypto";
 import { appendFileSync, mkdirSync, readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { DEFAULT_APPROVALS_DIR, type ApprovalsConfig } from "./config.js";
+import {
+  canonicalResolutionPayload,
+  verifyResolutionSignature,
+  type ResolutionSignature,
+} from "./resolution-signature.js";
 import type { ConfidenceVerdict } from "kcp-agent";
 
 /** Lifecycle states for an approval ticket. */
@@ -67,6 +72,12 @@ export interface ApprovalResolution {
   /** Policy/regulatory citation satisfied — required at approval time. */
   policyRef: string;
   note?: string;
+  /**
+   * Optional ed25519 signature over the resolution's canonical payload —
+   * non-repudiable proof the operator holds the named reviewer's key. Required
+   * when `approvals.require_signed_resolutions` is on (fail-closed otherwise).
+   */
+  signature?: ResolutionSignature;
 }
 
 /** Current status of a ticket: its request, computed state, and resolution. */
@@ -87,10 +98,26 @@ export interface ApprovalProvider {
   list(filter?: { state?: ApprovalState }): Promise<ApprovalStatus[]>;
 }
 
+/**
+ * Signature policy handed to a provider at construction. Enforcement lives at
+ * resolve() time — the one point every channel funnels through — so no channel
+ * can accept an unsigned resolution when the org requires signed ones.
+ */
+export interface SignaturePolicy {
+  /** Require a valid ed25519 signature on every resolution (fail-closed). */
+  requireSigned?: boolean;
+  /** Trusted reviewer keys (paths or inline material) that bind identity. */
+  trustedKeys?: string[];
+}
+
 /** Construct the configured ticket store. */
 export function providerFromConfig(config: ApprovalsConfig): ApprovalProvider {
-  if (config.provider === "memory") return new InMemoryApprovalProvider();
-  return new FileApprovalProvider(config.dir ?? DEFAULT_APPROVALS_DIR);
+  const sig: SignaturePolicy = {
+    requireSigned: config.require_signed_resolutions === true,
+    trustedKeys: config.trusted_keys,
+  };
+  if (config.provider === "memory") return new InMemoryApprovalProvider(sig);
+  return new FileApprovalProvider(config.dir ?? DEFAULT_APPROVALS_DIR, sig);
 }
 
 /** Build a new ticket with id + requestedAt assigned. */
@@ -145,6 +172,56 @@ function validateResolution(res: ApprovalResolution): void {
   }
 }
 
+/**
+ * Enforce the signature policy at resolution time. Fail-closed: when the org
+ * requires signed resolutions, a missing or invalid signature is not a valid
+ * resolution and the resolve throws. When the flag is off, behavior is
+ * unchanged — a signature, if present, is stored verbatim but not required.
+ */
+async function enforceSignature(
+  request: ApprovalRequest,
+  res: ApprovalResolution,
+  policy: SignaturePolicy | undefined,
+): Promise<void> {
+  if (!policy?.requireSigned) return;
+  if (!res.signature) {
+    throw new Error(
+      `approval resolution ${res.id} requires a signature — require_signed_resolutions is on`,
+    );
+  }
+  const ok = await verifyResolutionSignature(
+    {
+      id: res.id,
+      target: request.target,
+      tool: request.toolName,
+      state: res.state,
+      reviewer: res.reviewer,
+      policyRef: res.policyRef,
+      timestamp: res.reviewedAt,
+    },
+    res.signature,
+    policy.trustedKeys,
+  );
+  if (!ok) {
+    throw new Error(
+      `approval resolution ${res.id} has an invalid signature — fail-closed, not resolving`,
+    );
+  }
+}
+
+/** The canonical payload a reviewer signs for a given ticket + resolution. */
+export function resolutionPayload(request: ApprovalRequest, res: ApprovalResolution): string {
+  return canonicalResolutionPayload({
+    id: res.id,
+    target: request.target,
+    tool: request.toolName,
+    state: res.state,
+    reviewer: res.reviewer,
+    policyRef: res.policyRef,
+    timestamp: res.reviewedAt,
+  });
+}
+
 /** Check a ticket is resolvable; throws with the reason if not. */
 function assertResolvable(status: ApprovalStatus | undefined, id: string): asserts status is ApprovalStatus {
   if (!status) throw new Error(`unknown approval ticket: ${id}`);
@@ -159,6 +236,8 @@ function assertResolvable(status: ApprovalStatus | undefined, id: string): asser
 export class InMemoryApprovalProvider implements ApprovalProvider {
   private readonly requests: ApprovalRequest[] = [];
   private readonly resolutions = new Map<string, ApprovalResolution>();
+
+  constructor(private readonly signaturePolicy?: SignaturePolicy) {}
 
   async submit(req: ApprovalRequest): Promise<void> {
     this.requests.push(req);
@@ -175,6 +254,7 @@ export class InMemoryApprovalProvider implements ApprovalProvider {
     validateResolution(res);
     const status = await this.check(res.id);
     assertResolvable(status, res.id);
+    await enforceSignature(status.request, res, this.signaturePolicy);
     this.resolutions.set(res.id, res);
     return { state: res.state, request: status.request, resolution: res };
   }
@@ -201,7 +281,7 @@ type LogRecord =
 export class FileApprovalProvider implements ApprovalProvider {
   private readonly file: string;
 
-  constructor(dir: string) {
+  constructor(dir: string, private readonly signaturePolicy?: SignaturePolicy) {
     this.file = join(dir, "approvals.jsonl");
     mkdirSync(dir, { recursive: true });
   }
@@ -250,6 +330,7 @@ export class FileApprovalProvider implements ApprovalProvider {
     validateResolution(res);
     const status = await this.check(res.id);
     assertResolvable(status, res.id);
+    await enforceSignature(status.request, res, this.signaturePolicy);
     this.append({ kind: "resolution", resolution: res });
     return { state: res.state, request: status.request, resolution: res };
   }

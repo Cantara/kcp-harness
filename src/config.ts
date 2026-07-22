@@ -66,6 +66,18 @@ export interface ApprovalsConfig {
   dir?: string;
   /** Rules evaluated before any automated governance path. */
   rules: ApprovalRule[];
+  /**
+   * Require an ed25519 signature on every resolution (default: false). When
+   * true, resolving a ticket fails closed if the signature is missing or
+   * invalid — an unsigned resolution is not a valid resolution.
+   */
+  require_signed_resolutions?: boolean;
+  /**
+   * Trusted reviewer public keys (paths or inline PEM/base64/hex). When set, a
+   * signature must verify against one of these to bind it to an identity; when
+   * omitted, the signature's embedded key is used (integrity, not identity).
+   */
+  trusted_keys?: string[];
 }
 
 /** Default approvals store directory. */
@@ -191,6 +203,8 @@ function parseApprovals(raw: unknown): ApprovalsConfig | undefined {
     provider: a["provider"] === "memory" ? "memory" : "file",
     dir: a["dir"] === undefined ? undefined : String(a["dir"]),
     rules,
+    require_signed_resolutions: a["require_signed_resolutions"] === true,
+    trusted_keys: Array.isArray(a["trusted_keys"]) ? a["trusted_keys"].map(String) : undefined,
   };
 }
 
