@@ -286,4 +286,181 @@ describe("exportEvidence", () => {
     // Read and Glob match, Bash does not
     expect(a84.evidenceCount).toBe(2);
   });
+
+  it("exports ISO/IEC 42001 evidence", async () => {
+    writeLog([
+      makeEvent({ type: "session_start", outcome: "approved" }),
+      makeEvent({
+        type: "tool_call",
+        outcome: "approved",
+        classification: { governed: true, reason: "governed path" },
+        sequence: 2,
+      }),
+      makeEvent({
+        type: "approval_resolved",
+        outcome: "approved",
+        approval: { id: "t1", state: "approved", reviewer: "alice", requiredRole: "lead" },
+        sequence: 3,
+      }),
+      makeEvent({
+        type: "confidence_verdict",
+        outcome: "blocked",
+        confidence: { task: "answer", passed: false, score: 0.4, threshold: 0.8, detail: "low" },
+        sequence: 4,
+      }),
+    ]);
+
+    const result = await exportEvidence({
+      auditPath: LOG_PATH,
+      outputDir: OUT_DIR,
+      format: "iso42001",
+      organization: "AI Corp",
+    });
+
+    expect(result.files).toContain("iso42001/A.6.2.6-operation-monitoring.json");
+    expect(result.files).toContain("iso42001/A.6.2.8-event-logs.json");
+    expect(result.files).toContain("iso42001/A.9.2-responsible-use.json");
+    expect(result.files).toContain("iso42001/A.9.4-human-oversight.json");
+    expect(result.files).toContain("iso42001/A.6.2.4-verification-validation.json");
+    expect(result.files).toContain("iso42001/summary.md");
+
+    const manifest = readJSON(join(OUT_DIR, "manifest.json")) as any;
+    expect(manifest.format).toBe("iso42001");
+
+    const summary = readFileSync(join(OUT_DIR, "iso42001/summary.md"), "utf-8");
+    expect(summary).toContain("ISO/IEC 42001");
+    expect(summary).toContain("AI Corp");
+    expect(summary).toContain("A.9.4");
+  });
+
+  it("maps governed tool calls to ISO 42001 A.9.2 responsible use", async () => {
+    writeLog([
+      makeEvent({
+        type: "tool_call",
+        outcome: "approved",
+        classification: { governed: true, reason: "governed path" },
+      }),
+      makeEvent({
+        type: "tool_call",
+        outcome: "approved",
+        classification: { governed: false, reason: "pass-through" },
+        sequence: 2,
+      }),
+    ]);
+
+    await exportEvidence({ auditPath: LOG_PATH, outputDir: OUT_DIR, format: "iso42001" });
+
+    const a92 = readJSON(join(OUT_DIR, "iso42001/A.9.2-responsible-use.json")) as any;
+    expect(a92.evidenceCount).toBe(1);
+    expect(a92.controlId).toBe("A.9.2");
+  });
+
+  it("maps approval events to ISO 42001 A.9.4 human oversight", async () => {
+    writeLog([
+      makeEvent({
+        type: "approval_requested",
+        outcome: "blocked",
+        approval: { id: "t1", state: "pending", requiredRole: "lead", toolName: "Bash" },
+      }),
+      makeEvent({
+        type: "approval_resolved",
+        outcome: "approved",
+        approval: { id: "t1", state: "approved", reviewer: "bob" },
+        sequence: 2,
+      }),
+      makeEvent({ type: "tool_call", outcome: "approved", sequence: 3 }),
+    ]);
+
+    await exportEvidence({ auditPath: LOG_PATH, outputDir: OUT_DIR, format: "iso42001" });
+
+    const a94 = readJSON(join(OUT_DIR, "iso42001/A.9.4-human-oversight.json")) as any;
+    expect(a94.evidenceCount).toBe(2);
+    expect(a94.events[1].detail).toMatch(/bob/);
+  });
+
+  it("exports EU AI Act evidence", async () => {
+    writeLog([
+      makeEvent({ type: "session_start", outcome: "approved" }),
+      makeEvent({
+        type: "approval_resolved",
+        outcome: "approved",
+        approval: { id: "t1", state: "approved", reviewer: "alice" },
+        sequence: 2,
+      }),
+      makeEvent({
+        type: "confidence_verdict",
+        outcome: "blocked",
+        confidence: { task: "answer", passed: false, score: 0.4, threshold: 0.8, detail: "low", ticketId: "TIK-9" },
+        sequence: 3,
+      }),
+    ]);
+
+    const result = await exportEvidence({
+      auditPath: LOG_PATH,
+      outputDir: OUT_DIR,
+      format: "euaiact",
+      organization: "AI Corp",
+    });
+
+    expect(result.files).toContain("eu-ai-act/Art.12-1-automatic-logging.json");
+    expect(result.files).toContain("eu-ai-act/Art.12-2-traceability.json");
+    expect(result.files).toContain("eu-ai-act/Art.14-1-approval-gates.json");
+    expect(result.files).toContain("eu-ai-act/Art.14-4-intervention-stop.json");
+    expect(result.files).toContain("eu-ai-act/Art.14-4c-output-interpretation.json");
+    expect(result.files).toContain("eu-ai-act/summary.md");
+
+    const manifest = readJSON(join(OUT_DIR, "manifest.json")) as any;
+    expect(manifest.format).toBe("euaiact");
+
+    const summary = readFileSync(join(OUT_DIR, "eu-ai-act/summary.md"), "utf-8");
+    expect(summary).toContain("EU AI Act");
+    expect(summary).toContain("Art.12(1)");
+    expect(summary).toContain("Art.14(1)");
+  });
+
+  it("maps the whole append-only log to EU AI Act Art. 12(1)", async () => {
+    writeLog([
+      makeEvent({ type: "session_start", outcome: "approved" }),
+      makeEvent({ type: "tool_call", outcome: "approved", sequence: 2 }),
+      makeEvent({ type: "budget_spend", outcome: "approved", sequence: 3 }),
+    ]);
+
+    await exportEvidence({ auditPath: LOG_PATH, outputDir: OUT_DIR, format: "euaiact" });
+
+    const art12 = readJSON(join(OUT_DIR, "eu-ai-act/Art.12-1-automatic-logging.json")) as any;
+    // Article 12(1) captures every event in the append-only log.
+    expect(art12.evidenceCount).toBe(3);
+    expect(art12.controlId).toBe("Art.12(1)");
+  });
+
+  it("maps approval gates to EU AI Act Art. 14(1) and stops to Art. 14(4)", async () => {
+    writeLog([
+      makeEvent({
+        type: "approval_requested",
+        outcome: "blocked",
+        approval: { id: "t1", state: "pending", requiredRole: "lead" },
+      }),
+      makeEvent({
+        type: "budget_exceeded",
+        outcome: "blocked",
+        sequence: 2,
+      }),
+      makeEvent({
+        type: "tool_call",
+        outcome: "blocked",
+        classification: { governed: true, reason: "policy" },
+        sequence: 3,
+      }),
+    ]);
+
+    await exportEvidence({ auditPath: LOG_PATH, outputDir: OUT_DIR, format: "euaiact" });
+
+    const art14gate = readJSON(join(OUT_DIR, "eu-ai-act/Art.14-1-approval-gates.json")) as any;
+    expect(art14gate.evidenceCount).toBe(1);
+
+    const art14stop = readJSON(join(OUT_DIR, "eu-ai-act/Art.14-4-intervention-stop.json")) as any;
+    // Every blocked call is a halt/intervention record: pending approval_requested
+    // (outcome "blocked"), budget_exceeded, and the blocked tool_call = 3.
+    expect(art14stop.evidenceCount).toBe(3);
+  });
 });
