@@ -155,8 +155,11 @@ export interface AuditEvent {
   };
   /**
    * A settled governed purchase (for purchase_settled events; #139). Carries
-   * what was bought — vendor, amount, currency — and the signed receipt binding
-   * it non-repudiably. Never the wallet secret, only the receipt id + signature.
+   * every field the signature commits to — vendor, amount, currency, wallet,
+   * the receipt's own timestamp — plus the signature itself, so an auditor can
+   * reconstruct the exact canonical payload and independently verify it from
+   * the audit log alone, without needing a separate receipt store. `wallet`
+   * here is an account/wallet *identifier*, never key material or a secret.
    */
   purchase?: {
     /** The vendor paid. */
@@ -165,8 +168,12 @@ export interface AuditEvent {
     amount: number;
     /** The currency of the amount. */
     currency: string;
+    /** The wallet/account the funds moved from. */
+    wallet: string;
     /** The settlement receipt's id. */
     receipt: string;
+    /** The receipt's own canonical timestamp — part of the signed payload, distinct from this event's `timestamp`. */
+    receiptTimestamp: string;
     /** Whether the receipt carried a verifiable signature. */
     signed?: boolean;
     /** base64 detached signature over the receipt's canonical payload. */
@@ -319,7 +326,9 @@ export function buildPurchaseEvent(
       vendor: receipt.vendor,
       amount: receipt.amount,
       currency: receipt.currency,
+      wallet: receipt.wallet,
       receipt: receipt.id,
+      receiptTimestamp: receipt.timestamp,
       ...(signature
         ? {
             signed: true,

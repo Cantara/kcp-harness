@@ -108,6 +108,19 @@ export interface ConfidenceConfig {
   policy_ref?: string;
 }
 
+/**
+ * Signed purchase-receipt configuration (#139) — org policy for producing
+ * non-repudiable evidence of a settled governed buy. Absent = purchases still
+ * emit an unsigned `purchase_settled` audit event; configuring a key upgrades
+ * it to a signed receipt an auditor can verify independent of the audit log.
+ */
+export interface PurchaseReceiptsConfig {
+  /** Path to a PKCS8 PEM ed25519 private key the harness signs settlement receipts with. */
+  private_key: string;
+  /** Optional key identifier, recorded on the receipt for audit/rotation. */
+  key_id?: string;
+}
+
 /** A downstream MCP server to proxy tool calls to. */
 export interface DownstreamConfig {
   /** Human-readable name for this downstream server. */
@@ -142,6 +155,8 @@ export interface HarnessConfig {
     approvals?: ApprovalsConfig;
     /** Confidence gate for harness_assess (absent = caller must supply a threshold). */
     confidence?: ConfidenceConfig;
+    /** Signed purchase-receipt config for settled governed buys (#139). */
+    purchase_receipts?: PurchaseReceiptsConfig;
   };
   downstream: DownstreamConfig[];
   audit: AuditConfig;
