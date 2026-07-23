@@ -1,7 +1,12 @@
 import { describe, it, expect, beforeEach } from "vitest";
+import { readFileSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { HarnessProxy } from "../src/proxy.js";
 import { InMemoryAuditLog } from "../src/audit.js";
 import type { HarnessConfig } from "../src/config.js";
+
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 const testConfig: HarnessConfig = {
   version: "1.0",
@@ -44,6 +49,23 @@ describe("HarnessProxy", () => {
     expect(result["protocolVersion"]).toBe("2025-06-18");
     const serverInfo = result["serverInfo"] as Record<string, unknown>;
     expect(serverInfo["name"]).toBe("kcp-harness");
+  });
+
+  it("serverInfo.version matches package.json (release drift fails here, not in the field)", async () => {
+    // HARNESS_VERSION in proxy.ts (and downstream.ts) is a separate hardcoded
+    // constant from package.json's version, with no compiler-level link between
+    // them — it drifted to 0.1.0 across two 0.9.0 releases before this test
+    // existed. Mirrors kcp-agent's SERVER_INFO.version drift guard.
+    const pkg = JSON.parse(readFileSync(path.join(ROOT, "package.json"), "utf8"));
+    const response = (await proxy.handleMessage({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "initialize",
+      params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "test" } },
+    })) as Record<string, unknown>;
+    const result = response["result"] as Record<string, unknown>;
+    const serverInfo = result["serverInfo"] as Record<string, unknown>;
+    expect(serverInfo["version"]).toBe(pkg.version);
   });
 
   it("handles ping", async () => {
