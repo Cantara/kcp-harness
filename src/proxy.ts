@@ -13,6 +13,8 @@
 // servers' stdio directly.
 
 import { createInterface } from "node:readline";
+import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import type { HarnessConfig } from "./config.js";
 import { classify, extractTargets } from "./classifier.js";
 import { govern, assessSkillEligibility, type GovernanceDecision, type ApprovalContext } from "./governor.js";
@@ -20,6 +22,7 @@ import { checkConformance, type ObservedAction } from "./conformance.js";
 import { deriveCorrelation } from "./correlation.js";
 import { providerFromConfig, latestForCall, newRequest, parseDuration, type ApprovalProvider } from "./approval.js";
 import { assess } from "kcp-agent";
+import { signPurchaseReceipt, type PurchaseReceiptPayload } from "./purchase-receipt.js";
 import {
   AuditLog,
   InMemoryAuditLog,
@@ -31,6 +34,7 @@ import {
   buildConfidenceEvent,
   buildConformanceEvent,
   buildSkillEvent,
+  buildPurchaseEvent,
   type AuditWriter,
   type AuditEvent,
 } from "./audit.js";
@@ -716,6 +720,9 @@ export class HarnessProxy {
       this.audit.emit(
         buildConformanceEvent(this.session.id, nextSequence(this.session), active.id, verdict, undefined, correlationId),
       );
+      if (purchase) {
+        await this.recordPurchaseSettlement(purchase, correlationId);
+      }
       return undefined;
     }
 
@@ -775,6 +782,44 @@ export class HarnessProxy {
       ],
       isError: true,
     });
+  }
+
+  /**
+   * Record a settled governed purchase (#139): builds the receipt payload from
+   * the observed buy, signs it when `governance.purchase_receipts` is
+   * configured, and emits a `purchase_settled` audit event. Best-effort:
+   * signing failure (unreadable/invalid key) never blocks a purchase that
+   * already cleared conformance — it degrades to an unsigned settlement
+   * event rather than holding the call.
+   */
+  private async recordPurchaseSettlement(
+    purchase: { vendor: string; amount: number; currency: string; wallet?: string },
+    correlationId?: string,
+  ): Promise<void> {
+    const payload: PurchaseReceiptPayload = {
+      id: randomUUID(),
+      vendor: purchase.vendor,
+      amount: purchase.amount,
+      currency: purchase.currency,
+      wallet: purchase.wallet ?? "unspecified",
+      timestamp: new Date().toISOString(),
+    };
+
+    const receiptsConfig = this.config.governance.purchase_receipts;
+    let signature: Awaited<ReturnType<typeof signPurchaseReceipt>> | undefined;
+    if (receiptsConfig) {
+      try {
+        const pem = readFileSync(receiptsConfig.private_key, "utf-8");
+        signature = await signPurchaseReceipt(pem, payload, receiptsConfig.key_id);
+      } catch {
+        // Unreadable path, malformed PEM, or an unsupported key type — the
+        // purchase already cleared conformance and must not be held for this.
+      }
+    }
+
+    this.audit.emit(
+      buildPurchaseEvent(this.session.id, nextSequence(this.session), payload, signature, correlationId),
+    );
   }
 
   /**
@@ -914,7 +959,7 @@ function ticketSummary(id: string, state: string, requiredRole: string): Record<
 function detectPurchase(
   toolName: string,
   args: Record<string, unknown>,
-): { vendor: string; amount: number; currency: string } | undefined {
+): { vendor: string; amount: number; currency: string; wallet?: string } | undefined {
   const s = (v: unknown): string | undefined => (typeof v === "string" && v.length > 0 ? v : undefined);
   const n = (v: unknown): number | undefined =>
     typeof v === "number" ? v : typeof v === "string" && v.trim() !== "" && !Number.isNaN(Number(v)) ? Number(v) : undefined;
@@ -922,11 +967,15 @@ function detectPurchase(
   const vendor = s(args["vendor"]) ?? s(args["merchant"]) ?? s(args["payee"]) ?? s(args["seller"]);
   const amount = n(args["amount"]) ?? n(args["total"]) ?? n(args["price"]) ?? n(args["cost"]);
   const currency = s(args["currency"]) ?? s(args["ccy"]);
+  // Wallet/account is not required to adjudicate the spend conformance gate —
+  // only to bind a signed settlement receipt (#139) — so its absence never
+  // blocks a purchase, unlike vendor/amount/currency below.
+  const wallet = s(args["wallet"]) ?? s(args["account"]) ?? s(args["from"]);
 
   // A purchase is well-formed only when all three facets are present — a partial
   // shape (or a non-buy tool) is not adjudicated for spend.
   if (vendor !== undefined && amount !== undefined && currency !== undefined) {
-    return { vendor, amount, currency };
+    return { vendor, amount, currency, ...(wallet !== undefined ? { wallet } : {}) };
   }
   return undefined;
 }

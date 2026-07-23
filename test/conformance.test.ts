@@ -9,10 +9,14 @@
 
 import { describe, it, expect, beforeEach } from "vitest";
 import { join } from "node:path";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { generateKeyPairSync } from "node:crypto";
 import { checkConformance, type ActionScope, type ObservedAction } from "../src/conformance.js";
 import { HarnessProxy } from "../src/proxy.js";
 import { InMemoryAuditLog } from "../src/audit.js";
 import type { GovernancePolicy, GovernedDomain, HarnessConfig } from "../src/config.js";
+import { verifyPurchaseReceipt, type PurchaseReceiptPayload, type PurchaseReceiptSignature } from "../src/purchase-receipt.js";
 
 // -- Pure function: in-scope passes, out-of-scope holds, no-scope fails closed --
 
@@ -343,5 +347,134 @@ describe("HarnessProxy — conformance gate", () => {
     expect(tickets[0].request.evidence.detail).toMatch(/exceeds max_spend/);
     expect(verdict!.conformance!.ticketId).toBe(tickets[0].request.id);
     expect(audit.events.some((e) => e.type === "approval_requested")).toBe(true);
+  });
+
+  it("still enforces max_spend when the manifest quotes it as a string (regression)", async () => {
+    // procurement-quoted-spend-skill declares max_spend: "500" (quoted). Before
+    // the fix, withSpendScope's strict `typeof === "number"` check silently
+    // dropped this, so max_spend stayed undefined and checkConformance's amount
+    // check never ran — an arbitrarily large purchase to an authorized vendor
+    // would pass. It must now be coerced and enforced exactly like the
+    // unquoted 500 case above.
+    await call(proxy, 1, "Skill", { skill: "procurement-quoted-spend-skill" });
+    expect(audit.events.some((e) => e.type === "skill_loaded")).toBe(true);
+
+    const result = await call(proxy, 2, "purchase", {
+      vendor: "acme-supplies",
+      amount: 900,
+      currency: "USD",
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toMatch(/CONFORMANCE BLOCKED/);
+    expect(result.content[0].text).toMatch(/exceeds max_spend 500 USD/);
+
+    const verdict = audit.events.find((e) => e.type === "conformance_verdict");
+    expect(verdict!.outcome).toBe("blocked");
+    expect(verdict!.conformance!.reason).toMatch(/exceeds max_spend 500 USD/);
+  });
+
+  it("emits an (unsigned) purchase_settled event for an in-scope, in-budget buy (#139)", async () => {
+    // Before this fix, a conformant purchase produced only a conformance_verdict
+    // — signPurchaseReceipt/buildPurchaseEvent existed but were never called
+    // from the real settlement path. No governance.purchase_receipts is
+    // configured on proxyConfig, so the event must still be emitted, unsigned.
+    await call(proxy, 1, "Skill", { skill: "procurement-skill" });
+    await call(proxy, 2, "purchase", { vendor: "acme-supplies", amount: 250, currency: "USD" });
+
+    const settled = audit.events.find((e) => e.type === "purchase_settled");
+    expect(settled).toBeDefined();
+    expect(settled!.outcome).toBe("approved");
+    expect(settled!.purchase?.vendor).toBe("acme-supplies");
+    expect(settled!.purchase?.amount).toBe(250);
+    expect(settled!.purchase?.currency).toBe("USD");
+    expect(settled!.purchase?.signed).toBeUndefined();
+  });
+
+  it("does not emit purchase_settled for a held (over-budget) purchase", async () => {
+    await call(proxy, 1, "Skill", { skill: "procurement-skill" });
+    await call(proxy, 2, "purchase", { vendor: "acme-supplies", amount: 900, currency: "USD" });
+    expect(audit.events.some((e) => e.type === "purchase_settled")).toBe(false);
+  });
+});
+
+describe("HarnessProxy — signed purchase receipts (#139)", () => {
+  function newEd25519Pem() {
+    const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+    return {
+      privatePem: privateKey.export({ type: "pkcs8", format: "pem" }).toString(),
+      publicPem: publicKey.export({ type: "spki", format: "pem" }).toString(),
+    };
+  }
+
+  it("signs the settlement receipt when governance.purchase_receipts is configured", async () => {
+    const { privatePem, publicPem } = newEd25519Pem();
+    const dir = mkdtempSync(join(tmpdir(), "kcp-harness-receipt-key-"));
+    const keyPath = join(dir, "settling-authority.pem");
+    writeFileSync(keyPath, privatePem, "utf-8");
+
+    const audit = new InMemoryAuditLog();
+    const proxy = new HarnessProxy({
+      config: {
+        ...proxyConfig,
+        governance: { ...proxyConfig.governance, purchase_receipts: { private_key: keyPath, key_id: "authority-1" } },
+      },
+      audit,
+    });
+
+    await call(proxy, 1, "Skill", { skill: "procurement-skill" });
+    await call(proxy, 2, "purchase", { vendor: "acme-supplies", amount: 250, currency: "USD", wallet: "treasury-1" });
+
+    const settled = audit.events.find((e) => e.type === "purchase_settled")!;
+    expect(settled.purchase?.signed).toBe(true);
+    expect(settled.purchase?.keyId).toBe("authority-1");
+    expect(typeof settled.purchase?.signature).toBe("string");
+
+    // The signature must actually verify against the payload the event names —
+    // a signed:true flag alone proves nothing without this. Reconstructed
+    // entirely from the audit event, the way a real auditor with only the log
+    // (no separate receipt store) would have to.
+    const payload: PurchaseReceiptPayload = {
+      id: settled.purchase!.receipt,
+      vendor: settled.purchase!.vendor,
+      amount: settled.purchase!.amount,
+      currency: settled.purchase!.currency,
+      wallet: settled.purchase!.wallet,
+      timestamp: settled.purchase!.receiptTimestamp,
+    };
+    const signature: PurchaseReceiptSignature = {
+      algorithm: "ed25519",
+      value: settled.purchase!.signature!,
+      publicKey: publicPem,
+      keyId: settled.purchase?.keyId,
+    };
+    expect(await verifyPurchaseReceipt(payload, signature)).toBe(true);
+  });
+
+  it("degrades to an unsigned settlement event when the configured key is unreadable", async () => {
+    const audit = new InMemoryAuditLog();
+    const proxy = new HarnessProxy({
+      config: {
+        ...proxyConfig,
+        governance: {
+          ...proxyConfig.governance,
+          purchase_receipts: { private_key: "/does/not/exist.pem" },
+        },
+      },
+      audit,
+    });
+
+    await call(proxy, 1, "Skill", { skill: "procurement-skill" });
+    const result = await call(proxy, 2, "purchase", { vendor: "acme-supplies", amount: 250, currency: "USD" });
+
+    // The purchase itself is never held for a signing-key problem — it already
+    // cleared conformance. (The test harness has no real downstream "purchase"
+    // tool, so the call errors past the gate regardless — that's not what this
+    // test is checking; a CONFORMANCE BLOCKED text would be the signal that the
+    // signing problem incorrectly reached the gate itself.)
+    expect(result.content[0].text).not.toMatch(/CONFORMANCE BLOCKED/);
+    const settled = audit.events.find((e) => e.type === "purchase_settled");
+    expect(settled).toBeDefined();
+    expect(settled!.purchase?.signed).toBeUndefined();
   });
 });

@@ -471,6 +471,19 @@ export interface SkillEligibility {
  * onto the parsed scope. Best-effort and fail-safe: an unreadable manifest (e.g.
  * a remote URL) or an absent spend block simply yields the base scope unchanged.
  */
+/**
+ * Coerce a spend amount the same way kcp-agent's own manifest parser does
+ * (`Number(v)`, not a strict `typeof === "number"` check) — so a quoted
+ * numeric YAML value (`max_spend: "50"`) still ends up as a real ceiling
+ * instead of silently disabling the amount check downstream in
+ * checkConformance, which only enforces max_spend when it is a number.
+ */
+function asSpendAmount(v: unknown): number | undefined {
+  if (v === undefined || v === null) return undefined;
+  const n = Number(v);
+  return Number.isNaN(n) ? undefined : n;
+}
+
 function withSpendScope(
   base: { tools?: string[]; paths?: string[]; capabilities?: string[] } | undefined,
   manifestPath: string,
@@ -486,7 +499,8 @@ function withSpendScope(
     if (!spendRaw) return base;
 
     const spend: { max_spend?: number; allowed_vendors?: string[]; currency?: string } = {};
-    if (typeof spendRaw["max_spend"] === "number") spend.max_spend = spendRaw["max_spend"] as number;
+    const maxSpend = asSpendAmount(spendRaw["max_spend"]);
+    if (maxSpend !== undefined) spend.max_spend = maxSpend;
     if (Array.isArray(spendRaw["allowed_vendors"])) spend.allowed_vendors = (spendRaw["allowed_vendors"] as unknown[]).map(String);
     if (typeof spendRaw["currency"] === "string") spend.currency = spendRaw["currency"] as string;
 
