@@ -140,6 +140,13 @@ downstream:
 Every verdict is a `skill_loaded` (`eligible: true` or `false`) audit event, carrying the
 skill's id, the deciding gate, its written reason, and its `action_scope`.
 
+> **Authoring skill units:** the conventions for what a *good* `kind: skill` +
+> `action_scope` looks like, the SK001–SK008 linter, the conformance vectors (canonical
+> fixtures for testing any producer or consumer of skill units — including this
+> harness's gate), and a curated library of governed playbooks live in
+> [Cantara/kcp-skill](https://github.com/Cantara/kcp-skill). Lint a manifest's skill
+> units with `npx kcp-skill-lint knowledge.yaml`.
+
 ## Procedural Conformance — grounding for actions
 
 Loading a skill is not a blank check. Once one is active, **every subsequent governed tool
