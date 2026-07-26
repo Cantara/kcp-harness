@@ -165,6 +165,10 @@ money_budget → context_budget
 A unit must pass **all** gates. The gate that blocks it is recorded in the decision trace. Same
 inputs → same plan. No model involved.
 
+For the `skill_eligibility` gate's subject matter — governed `kind: skill` units — the
+authoring conventions, linter, and conformance vectors live in
+[Cantara/kcp-skill](https://github.com/Cantara/kcp-skill).
+
 ## MCP tools
 
 Once connected, agents can use these governance tools:
