@@ -71,7 +71,7 @@ The \`{{task}}\` placeholder is replaced with OpenClaw's current task descriptio
 **Available MCP Tools:**
 - \`kcp_plan\` — deterministic load plan
 - \`kcp_load\` — plan + load content
-- \`kcp_trace\` — 13-gate decision trace
+- \`kcp_trace\` — 14-gate decision trace
 - \`harness_budget\` — session spend tracking
 - \`harness_temporal_check\` — plan drift detection`,
   };

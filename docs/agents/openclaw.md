@@ -53,7 +53,7 @@ Calls `kcp_load` to inject governed knowledge into the prompt **before** it's as
 
 ### `before_agent_finalize`
 
-Calls `kcp_trace` **after** the agent produces its response, creating a 13-gate decision trace for the audit log. This provides a compliance record of what knowledge was available and why.
+Calls `kcp_trace` **after** the agent produces its response, creating a 14-gate decision trace for the audit log. This provides a compliance record of what knowledge was available and why.
 
 ## The `{{task}}` Placeholder
 

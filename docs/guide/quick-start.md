@@ -61,7 +61,7 @@ kcp-harness check
 Your agent now routes knowledge access through the harness. When it tries to read a governed file:
 
 1. The harness classifies the tool call as knowledge-navigation
-2. Runs the 13-gate cascade via kcp-agent
+2. Runs the 14-gate cascade via kcp-agent
 3. Returns content only if all gates pass
 4. Logs the decision to the audit log
 
@@ -71,7 +71,7 @@ Your agent now routes knowledge access through the harness. When it tries to rea
 You: "Explain the authentication flow"
 
 Agent: calls kcp_plan(task="explain auth flow", manifest="./knowledge.yaml")
-  → Harness: runs 13-gate cascade
+  → Harness: runs 14-gate cascade
   → Returns: plan with 3 eligible units
 
 Agent: calls kcp_load(task="explain auth flow", manifest="./knowledge.yaml")

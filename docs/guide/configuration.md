@@ -67,7 +67,7 @@ audit:
 
 ## Governed Domains
 
-Each domain maps a `knowledge.yaml` manifest to the paths, URLs, and tools it governs. When a tool call targets a governed path, the harness routes it through the manifest's 13-gate cascade.
+Each domain maps a `knowledge.yaml` manifest to the paths, URLs, and tools it governs. When a tool call targets a governed path, the harness routes it through the manifest's 14-gate cascade.
 
 You can have multiple domains:
 

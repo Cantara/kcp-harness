@@ -44,7 +44,7 @@ These paths are governed by \`${manifest}\`.
 
 - \`kcp_plan\` — deterministic load plan (no content)
 - \`kcp_load\` — plan + load eligible unit content
-- \`kcp_trace\` — 13-gate decision trace
+- \`kcp_trace\` — 14-gate decision trace
 - \`harness_budget\` — session spend tracking
 - \`harness_temporal_check\` — plan drift detection
 `,

@@ -53,7 +53,7 @@ These paths are governed by \`${manifest}\`. Use the kcp-harness MCP server to a
 
 - \`kcp_plan\` — deterministic load plan
 - \`kcp_load\` — plan + load content
-- \`kcp_trace\` — decision trace (13-gate cascade)
+- \`kcp_trace\` — decision trace (14-gate cascade)
 - \`harness_budget\` — session spend tracking
 - \`harness_temporal_check\` — plan drift detection
 `,

@@ -54,7 +54,7 @@ Governed by: \`${manifest}\`
 
 - \`kcp_plan\` — deterministic load plan
 - \`kcp_load\` — plan + load content
-- \`kcp_trace\` — 13-gate decision trace
+- \`kcp_trace\` — 14-gate decision trace
 - \`kcp_validate\` — lint knowledge.yaml
 - \`harness_status\` — governance state
 - \`harness_budget\` — spend tracking

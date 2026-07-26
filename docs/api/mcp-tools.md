@@ -29,7 +29,7 @@ Same as `kcp_plan`.
 
 ## `kcp_trace`
 
-Get a full 13-gate decision trace. Shows exactly which gates each unit passed or failed, and why.
+Get a full 14-gate decision trace. Shows exactly which gates each unit passed or failed, and why.
 
 **Parameters:**
 
