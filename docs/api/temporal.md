@@ -11,7 +11,7 @@ Knowledge units can have time-based constraints. The harness monitors these and 
 
 ## Temporal Gates
 
-The 13-gate cascade includes temporal checks:
+The 14-gate cascade includes temporal checks:
 
 | Gate | What it checks |
 |---|---|

@@ -50,7 +50,7 @@ Claude Code → Read("docs/api.md")
   │       "Use kcp_load to access governed knowledge at docs/api.md"
   │
   └── Claude Code calls kcp_load instead
-      └── Harness: 13-gate cascade → approved → returns content
+      └── Harness: 14-gate cascade → approved → returns content
 ```
 
 The hooks ensure governance even if the model "forgets" to use `kcp_load`. This is the SSH-guard pattern applied to knowledge access.
@@ -63,7 +63,7 @@ Once connected, Claude Code can use these MCP tools:
 |---|---|
 | `kcp_plan` | Get a deterministic load plan (no content) |
 | `kcp_load` | Plan + load eligible unit content |
-| `kcp_trace` | 13-gate decision trace |
+| `kcp_trace` | 14-gate decision trace |
 | `harness_status` | Current governance state |
 | `harness_budget` | Session spend tracking |
 | `harness_temporal_check` | Plan drift detection |

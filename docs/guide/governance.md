@@ -99,7 +99,7 @@ email, or ticketing integrations are org-side implementations of the same surfac
 
 ## Post-Synthesis Confidence Gate
 
-The 13 gates all evaluate declared unit properties *before* anything is generated. Confidence
+The 14 gates all evaluate declared unit properties *before* anything is generated. Confidence
 is a property of the model's **output** — so it is a separate, later stage, downstream of
 synthesis:
 

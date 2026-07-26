@@ -38,7 +38,7 @@ This project enforces deterministic knowledge governance via the KCP Compliance 
 
 ${governedPathsBlock(options)}
 
-These paths are governed by \`${manifest}\`. Access is controlled by the kcp-agent planner (13-gate cascade).
+These paths are governed by \`${manifest}\`. Access is controlled by the kcp-agent planner (14-gate cascade).
 
 ## Required Workflow
 
@@ -50,7 +50,7 @@ These paths are governed by \`${manifest}\`. Access is controlled by the kcp-age
 
 - \`kcp_plan\` — produce a load plan without loading content
 - \`kcp_load\` — plan + load content of eligible units
-- \`kcp_trace\` — see the 13-gate decision trace
+- \`kcp_trace\` — see the 14-gate decision trace
 - \`harness_status\` — check governance state
 - \`harness_budget\` — check remaining budget
 - \`harness_temporal_check\` — verify plan temporal validity

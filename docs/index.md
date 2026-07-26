@@ -17,7 +17,7 @@ features:
   - title: Agent-Agnostic
     details: Works with Claude Code, Cursor, Copilot, Windsurf, Cline, Continue, Crush, and OpenClaw. One compliance layer, any agent.
   - title: Deterministic
-    details: 13-gate cascade produces identical plans for identical inputs. No probabilistic selection — every decision is traceable.
+    details: 14-gate cascade produces identical plans for identical inputs. No probabilistic selection — every decision is traceable.
   - title: Fail-Closed
     details: If the harness can't verify a knowledge request, it blocks it. No silent fallback to ungoverned access.
   - title: Audit-First

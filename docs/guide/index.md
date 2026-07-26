@@ -27,7 +27,7 @@ Agent (Claude Code / Cursor / Copilot / ...)
 │                                     │
 │  1. Receive tool call               │
 │  2. Classify: knowledge-nav? Y/N    │
-│  3. If Y → 13-gate cascade          │
+│  3. If Y → 14-gate cascade          │
 │     • audience / temporal / budget   │
 │     • decision trace → audit log    │
 │  4. If N → pass through             │
@@ -61,7 +61,7 @@ The agent can't bypass governance because it only talks to the proxy's MCP inter
 │  MCP proxy — deterministic governance        │
 ├──────────────────────────────────────────────┤
 │  Layer 1: kcp-agent (planner core)           │
-│  13-gate cascade, decision traces            │
+│  14-gate cascade, decision traces            │
 └──────────────────────────────────────────────┘
 ```
 

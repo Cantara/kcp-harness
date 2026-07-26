@@ -9,7 +9,7 @@
 
 KCP Harness is an MCP compliance proxy that sits between an AI coding agent and its tools. It
 intercepts knowledge-related calls, routes them through the
-[kcp-agent](https://github.com/Cantara/kcp-agent) deterministic planner (13-gate cascade, no LLM),
+[kcp-agent](https://github.com/Cantara/kcp-agent) deterministic planner (14-gate cascade, no LLM),
 and produces compliance artifacts — decision traces, audit logs, budget ledgers — as a side effect
 of normal agent operation.
 
@@ -25,7 +25,7 @@ Agent (Claude Code / Cursor / Copilot / Windsurf / Cline / Crush / OpenClaw / ..
 ┌─────────────────────────────────────────────────────────┐
 │  kcp-harness                                            │
 │                                                         │
-│  classify → govern (13 gates) → execute → audit         │
+│  classify → govern (14 gates) → execute → audit         │
 │                                                         │
 │  Side outputs:                                          │
 │  · Decision traces     (per-request, deterministic)     │
@@ -51,7 +51,7 @@ compliance layer without replacing the agent.
 | What you keep | What the harness adds |
 |---|---|
 | Your agent (Claude Code, Cursor, Copilot, ...) | Deterministic knowledge selection |
-| Your workflow (coding, reviewing, shipping) | Decision traces (13 gates per unit) |
+| Your workflow (coding, reviewing, shipping) | Decision traces (14 gates per unit) |
 | Your tools (MCP servers, shell, browser) | Budget enforcement (ceiling, per-currency) |
 | | Temporal governance (drift detection) |
 | | Append-only audit log |
@@ -126,7 +126,7 @@ Every tool call flows through a five-stage pipeline:
 ```
 1. RECEIVE      MCP JSON-RPC request from agent
 2. CLASSIFY     Knowledge-navigation or pass-through?
-3. GOVERN       13-gate cascade (audience → temporal → budget → ...)
+3. GOVERN       14-gate cascade (audience → temporal → budget → ...)
 4. EXECUTE      Call downstream tool / return content
 5. AUDIT        Log decision to append-only audit log
 ```
@@ -152,13 +152,14 @@ Two automated modes, plus a human gate that outranks both:
   restarts and resolve via the `kcp-harness approvals` CLI (or any custom `ApprovalProvider`
   channel). Resolutions require a named reviewer *and* a policy citation.
 
-### The 13-gate cascade
+### The 14-gate cascade
 
-Every knowledge unit is evaluated through 13 deterministic gates, in order:
+Every knowledge unit is evaluated through 14 deterministic gates, in order:
 
 ```
 audience → not_for → temporal → deprecated → supersession → relevance →
-attestation → payment → access → strict → max_units → money_budget → context_budget
+skill_eligibility → attestation → payment → access → strict → max_units →
+money_budget → context_budget
 ```
 
 A unit must pass **all** gates. The gate that blocks it is recorded in the decision trace. Same
@@ -172,7 +173,7 @@ Once connected, agents can use these governance tools:
 |---|---|
 | `kcp_plan` | Deterministic load plan — which units, in what order, which skipped and why |
 | `kcp_load` | Plan + load eligible unit content |
-| `kcp_trace` | Full 13-gate decision trace |
+| `kcp_trace` | Full 14-gate decision trace |
 | `kcp_validate` | Lint a `knowledge.yaml` |
 | `harness_status` | Current governance state |
 | `harness_session` | Approved plans + known units for this session |
@@ -294,7 +295,7 @@ const output = generate("claude-code", { manifest: "./knowledge.yaml", paths: ["
 │  MCP proxy — deterministic governance        │
 ├──────────────────────────────────────────────┤
 │  Layer 1: kcp-agent (planner core)           │
-│  13-gate cascade, decision traces            │
+│  14-gate cascade, decision traces            │
 └──────────────────────────────────────────────┘
 ```
 

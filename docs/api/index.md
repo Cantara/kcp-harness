@@ -25,7 +25,7 @@ KCP Harness exposes three interfaces:
 |---|---|
 | `kcp_plan` | Deterministic load plan (no content) |
 | `kcp_load` | Plan + load eligible unit content |
-| `kcp_trace` | 13-gate decision trace |
+| `kcp_trace` | 14-gate decision trace |
 | `harness_status` | Current governance state |
 | `harness_session` | Session info |
 | `harness_budget` | Session spend tracking |

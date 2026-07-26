@@ -10,7 +10,7 @@ Every tool call flows through this pipeline:
 ┌──────────────────────────────────────────────────────────────┐
 │  1. RECEIVE          MCP JSON-RPC request from agent         │
 │  2. CLASSIFY         Knowledge-nav or pass-through?          │
-│  3. GOVERN           Route through 13-gate cascade           │
+│  3. GOVERN           Route through 14-gate cascade           │
 │  4. EXECUTE          Call downstream tool / return content    │
 │  5. AUDIT            Log decision to append-only audit log   │
 │  6. RESPOND          Return result + governance metadata     │
@@ -35,12 +35,12 @@ If a tool call doesn't match any governed domain, it's classified as **pass-thro
 
 ## Governor
 
-The governor enforces the 13-gate cascade from kcp-agent:
+The governor enforces the 14-gate cascade from kcp-agent:
 
 ```
 audience → not_for → temporal → deprecated → supersession →
-relevance → attestation → payment → access → strict →
-max_units → money_budget → context_budget
+relevance → skill_eligibility → attestation → payment → access →
+strict → max_units → money_budget → context_budget
 ```
 
 Two modes:
