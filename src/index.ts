@@ -62,7 +62,7 @@ export {
 // call in order to join its own records to the audit trail. Without them a consumer can only
 // hardcode an assumption about our internals, and the join breaks silently the day we change
 // how a traceparent is reduced.
-export { deriveCorrelation, parseTraceparent, traceparentFromArgs } from "./correlation.js";
+export { correlationKey, deriveCorrelation, parseTraceparent, traceparentFromArgs } from "./correlation.js";
 export type { Correlation } from "./correlation.js";
 
 export { runApprovals } from "./approvals-cli.js";

@@ -6,6 +6,7 @@
 
 import { createReadStream, existsSync, statSync } from "node:fs";
 import { createInterface } from "node:readline";
+import { correlationKey } from "./correlation.js";
 import type { AuditEvent, AuditEventType } from "./audit.js";
 
 /** Filter criteria for querying audit events. */
@@ -218,8 +219,12 @@ export class AuditReader {
    * when no event carries that id.
    */
   async decisionChain(correlationId: string): Promise<DecisionChain | undefined> {
+    // Accept either the stored trace-id or the full traceparent the caller is holding: the
+    // components producing the other half of the chain record the traceparent, and an exact
+    // match returned undefined for the id they actually have.
+    const key = correlationKey(correlationId);
     const chains = await this.chains();
-    return chains.find((c) => c.correlationId === correlationId);
+    return chains.find((c) => c.correlationId === key);
   }
 
   /** Check if the audit log file exists. */

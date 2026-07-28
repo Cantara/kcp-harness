@@ -48,6 +48,8 @@ interface ControlEvidence {
     type: string;
     outcome: string;
     detail: string;
+    /** Links this evidence to its decision-record chain (#34). Absent when uncorrelated. */
+    correlationId?: string;
   }>;
 }
 
@@ -499,6 +501,11 @@ function buildControlEvidence(
       type: e.type,
       outcome: e.outcome,
       detail: detailFn(e),
+      // Without this an exported event cannot be traced back to the decision chain that
+      // produced it. Omitted rather than blanked when absent: an empty field reads as
+      // "not correlated", which is true, while an invented one is a false claim in an
+      // artifact whose whole purpose is being trustworthy.
+      ...(e.correlationId ? { correlationId: e.correlationId } : {}),
     })),
   };
 }
