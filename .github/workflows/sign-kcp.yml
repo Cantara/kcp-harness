@@ -4,6 +4,13 @@ on:
   push:
     branches: [main, master]
     paths: [knowledge.yaml]
+  # Manual trigger, runnable against any ref. Without it the manifest can only be
+  # re-signed by a push to main — which is a problem for this repo specifically,
+  # because its own test suite verifies knowledge.yaml.sig. Editing the manifest in a
+  # PR invalidates the signature, CI fails, and the only thing that would fix it
+  # happens after the merge that CI is blocking. Dispatching on the PR branch breaks
+  # that circle without anyone handling the key.
+  workflow_dispatch:
 
 jobs:
   sign:
