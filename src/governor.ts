@@ -511,6 +511,17 @@ function withSpendScope(
   }
 }
 
+/**
+ * Kinds this harness treats as governed procedures — things that *act*, and so must
+ * carry an explicit eligibility grant before an agent may invoke them.
+ *
+ * `playbook` joined in KCP v0.29 (§4.3b). It is deliberately a set rather than a chain
+ * of `||` comparisons: the same condition exists in kcp-agent's planner and trace, and
+ * the one time it was written as a literal equality check a playbook slipped past it
+ * (kcp-agent#118).
+ */
+const GOVERNED_KINDS = new Set(["skill", "playbook"]);
+
 export async function assessSkillEligibility(
   domain: GovernedDomain,
   skillId: string | undefined,
@@ -531,8 +542,24 @@ export async function assessSkillEligibility(
   }
   // Merge back the spend envelope kcp-agent's parser drops (#139).
   const actionScope = withSpendScope(unit.action_scope, domain.manifest, skillId);
-  if (unit.kind !== "skill") {
-    return { eligible: false, reason: `unit "${skillId}" is not kind: skill — not invoke-eligible`, gate: "skill_eligibility", skillId, actionScope };
+  // Governed procedures are kind: skill and, since KCP v0.29, kind: playbook (§4.3b).
+  // A playbook is an ordered composition of units governed per step — a procedure by
+  // every criterion that put skills behind this gate, and one that reaches `commit` by
+  // design.
+  //
+  // The previous test was `kind !== "skill"`. That fail-closed on playbooks and was
+  // therefore safe, but it refused them for the wrong reason: it could not tell "this
+  // composition has no grant" from "this is not a procedure at all". A playbook carrying
+  // an explicit load_eligible: true was refused identically to one carrying nothing, so
+  // the harness could not represent a decision a human had actually made, and the audit
+  // trail recorded a category statement where a governance verdict belonged. Safe and
+  // useless is still a bug.
+  //
+  // This is the third copy of the condition in the stack: kcp-agent's planner produces
+  // the canonical plan, its trace reimplements the cascade for per-gate verdicts, and
+  // this decides at the proxy boundary. kcp-agent#118 is what their drift costs.
+  if (!GOVERNED_KINDS.has(unit.kind ?? "")) {
+    return { eligible: false, reason: `unit "${skillId}" is kind: ${unit.kind ?? "knowledge"} — not a governed procedure, not invoke-eligible`, gate: "skill_eligibility", skillId, actionScope };
   }
 
   // Trace the skill against its own intent so the relevance gate matches and

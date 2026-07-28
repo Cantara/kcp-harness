@@ -89,10 +89,20 @@ describe("kcp-skill vectors — harness semantics over the canonical fixtures", 
   });
 
   it("05-non-skill-kinds-untouched: policy/schema/unknown kinds are never invoke-eligible, with the kind named", async () => {
-    for (const id of ["security", "api-schema", "mystery"]) {
+    // The assertion is that the verdict NAMES the kind, which is what the test title
+    // always claimed. It previously checked for "not kind: skill" — a phrase that says
+    // what the unit isn't. Since #53 widened governed kinds to {skill, playbook}, the
+    // verdict names what it is, which is both accurate and the more useful audit record.
+    const expected: Record<string, string> = {
+      security: "kind: policy",
+      "api-schema": "kind: schema",
+      mystery: "kind: hologram",
+    };
+    for (const [id, kind] of Object.entries(expected)) {
       const verdict = await assess("05-non-skill-kinds-untouched", id);
       expect(verdict.eligible).toBe(false);
-      expect(verdict.reason).toContain("not kind: skill");
+      expect(verdict.reason).toContain(kind);
+      expect(verdict.reason).toContain("not a governed procedure");
     }
   });
 });

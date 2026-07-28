@@ -80,11 +80,16 @@ describe("assessSkillEligibility", () => {
     expect(r.reason).toMatch(/no unit/i);
   });
 
-  it("refuses a non-skill unit invoked as a skill", async () => {
+  it("refuses a non-procedure unit invoked as a skill, naming its actual kind", async () => {
+    // Wording widened with the gate (#53): "not kind: skill" stopped being accurate
+    // once playbook joined skill as a governed kind. The verdict now names the kind
+    // the unit actually has, which is what an operator reading an audit record needs —
+    // "knowledge" tells them why, "not kind: skill" only tells them what it isn't.
     const session = createSession();
     const r = await assessSkillEligibility(skillDomain, "deploy-runbook", session, policy);
     expect(r.eligible).toBe(false);
-    expect(r.reason).toMatch(/not kind: skill/i);
+    expect(r.reason).toMatch(/not a governed procedure/i);
+    expect(r.reason).toMatch(/kind: knowledge/i);
   });
 
   it("refuses when no skill id is supplied", async () => {
