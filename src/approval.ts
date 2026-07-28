@@ -50,6 +50,19 @@ export interface ApprovalRequest {
   requiredRole: string;
   /** ISO timestamp the ticket was opened. */
   requestedAt: string;
+  /**
+   * The action this ticket is about, as a correlation id (#34).
+   *
+   * `sessionId` names a session, which holds many actions; this names the one a human is
+   * being asked to sign off. Without it, "which action did this person approve?" is
+   * answerable only by cross-referencing the audit event that wrapped the request — which
+   * holds while ticket and log sit together, and stops the moment a ticket is exported or
+   * read on its own, exactly when an auditor is looking at it.
+   *
+   * Absent when the intercepted call carried no traceparent. Never invented: a ticket
+   * claiming to belong to a chain that does not exist is worse than one standing alone.
+   */
+  correlationId?: string;
   /** ISO timestamp after which an unresolved ticket reads as expired. */
   expiresAt?: string;
   /** Evidence generated at request time — why a human is being asked. */

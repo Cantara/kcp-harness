@@ -40,6 +40,7 @@ import { matchesPrefix } from "./classifier.js";
 import type { SessionState, ApprovedPlan } from "./session.js";
 import { isPathApproved, addPlan, recordSpend } from "./session.js";
 import type { SpendResult } from "./budget-ledger.js";
+import { deriveCorrelation, traceparentFromArgs } from "./correlation.js";
 import {
   latestForCall,
   newRequest,
@@ -119,7 +120,17 @@ export async function govern(
     const rule = approvals.rules.find((r) => ruleMatches(r, toolName, target));
     if (rule) {
       try {
-        return await governByApproval(rule, toolName, target ?? "", session, domain, approvals.provider);
+        return await governByApproval(
+          rule,
+          toolName,
+          target ?? "",
+          session,
+          domain,
+          approvals.provider,
+          // Same reduction the audit path uses, from the same args — one source of truth
+          // for what this call's correlation is.
+          traceparentFromArgs(args) ? deriveCorrelation(args).correlationId : undefined,
+        );
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         // Fail-closed: if the approval store is unreachable we cannot prove
@@ -196,6 +207,7 @@ async function governByApproval(
   session: SessionState,
   domain: GovernedDomain,
   provider: ApprovalProvider,
+  correlationId?: string,
 ): Promise<GovernanceDecision> {
   const existing = await latestForCall(provider, target, toolName);
 
@@ -233,6 +245,7 @@ async function governByApproval(
 
   // No usable ticket (none yet, or the last one expired) → open a fresh one.
   const request = newRequest({
+    ...(correlationId ? { correlationId } : {}),
     sessionId: session.id,
     toolName,
     target,
