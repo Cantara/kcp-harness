@@ -25,3 +25,15 @@ describe("every stamped version matches package.json", () => {
     });
   }
 });
+
+// The manifest version tracked package.json exactly until 0.4.2 — the commit that set it
+// says "bump to 0.4.2" and moves both — and then stopped while the package went to 0.10.x.
+// Six minors of the repo describing itself as an older release to anything that read its
+// manifest, which is the one thing a self-describing repo must not get wrong.
+describe("the repo's own manifest declares the package version", () => {
+  it("knowledge.yaml version matches package.json", () => {
+    const declared = read("knowledge.yaml").match(/^version:\s*"?([\d.]+)"?/m);
+    expect(declared, "knowledge.yaml has no version").toBeTruthy();
+    expect(declared![1], `knowledge.yaml ${declared?.[1]} vs package.json ${pkgVersion}`).toBe(pkgVersion);
+  });
+});
