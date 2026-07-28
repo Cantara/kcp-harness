@@ -61,6 +61,23 @@ export function traceparentFromArgs(args: Record<string, unknown>): unknown {
 }
 
 /**
+ * Reduce whatever id a caller is holding to the form this proxy stores.
+ *
+ * We store the trace-id (see {@link deriveCorrelation}). The components that produce the
+ * other half of a decision chain — a composing runtime and the planner's `--json` envelope —
+ * both hold the full W3C traceparent. A lookup that matched exactly therefore missed the one
+ * shape that matters: fetching "the chain for this task" from outside this repo.
+ *
+ * A value that is not a traceparent is returned unchanged and matched literally. Chains
+ * minted by `randomUUID()` — what happens when no traceparent arrives — are stored as-is,
+ * and reducing them would lose them.
+ */
+export function correlationKey(value: string): string {
+  const parsed = parseTraceparent(value);
+  return parsed ? parsed.traceId : value;
+}
+
+/**
  * Derive the correlation for a tool call: reuse an incoming W3C traceparent
  * (trace-id → correlation id, span-id → parent), else mint a fresh id.
  */
