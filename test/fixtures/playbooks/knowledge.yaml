@@ -1,0 +1,58 @@
+# kind: playbook fixture (#53) — KCP v0.29, §4.3b / RFC-0027.
+#
+# Local, no serving/federation block so the planner needs no network. Three units:
+# the skill a playbook composes, a granted playbook, and an ungranted one.
+kcp_version: "0.29"
+project: playbook-fixture
+version: 1.0.0
+updated: "2026-07-28"
+language: en
+
+units:
+  - id: rotate-key
+    path: skills/rotate-key.md
+    kind: skill
+    intent: "Rotate the production signing key"
+    scope: module
+    audience: [agent]
+    triggers: [rotate, signing, key, production]
+    load_eligible: true
+    action_scope:
+      tools: [Bash]
+      paths: [infra/]
+      capabilities: [key-management]
+
+  # Granted: a human has signed off that this composition may be enacted.
+  - id: rotate-key-playbook
+    path: playbooks/rotate.md
+    kind: playbook
+    intent: "Rotate the production signing key end to end"
+    scope: module
+    audience: [agent]
+    triggers: [rotate, signing, key, production]
+    load_eligible: true
+    steps:
+      - id: verify
+        uses: rotate-key
+        authority_level: observe
+        success_condition: "current key fingerprint reported"
+        on_failure: abort
+      - id: rotate
+        uses: rotate-key
+        depends_on: [verify]
+        authority_level: commit
+        escalation: requires_approval
+        on_failure: escalate
+
+  # Ungranted: identical composition, no grant. Must fail closed.
+  - id: ungranted-playbook
+    path: playbooks/ungranted.md
+    kind: playbook
+    intent: "Rotate the production signing key without approval"
+    scope: module
+    audience: [agent]
+    triggers: [rotate, signing, key, production]
+    steps:
+      - id: rotate
+        uses: rotate-key
+        authority_level: commit
