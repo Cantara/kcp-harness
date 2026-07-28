@@ -744,6 +744,8 @@ export class HarnessProxy {
       } else {
         const routing = this.config.governance.confidence;
         const request = newRequest({
+          // The ticket names the action, not just the session (#34).
+          ...(correlationId ? { correlationId } : {}),
           sessionId: this.session.id,
           toolName,
           target,
@@ -887,6 +889,8 @@ export class HarnessProxy {
         // None yet, or the last ticket expired → open a fresh one with the
         // verdict as evidence, generated at gate time.
         const request = newRequest({
+          // The ticket names the action, not just the session (#34).
+          ...(correlationId ? { correlationId } : {}),
           sessionId: this.session.id,
           toolName: "harness_assess",
           target: task,
