@@ -87,8 +87,19 @@ export async function runApprovals(
         ...(signature ? { signature } : {}),
       });
 
-      // The resolution is an audit event on the same log the proxy writes
-      audit?.emit(buildApprovalEvent(status.request.sessionId, 0, "approval_resolved", status));
+      // The resolution is an audit event on the same log the proxy writes, and carries the
+      // ticket's correlation so a named human's approval stays attached to the action it
+      // authorised. Without it, the record an audit cares about most — a person signed this
+      // off — dropped out of the chain at the moment it was created.
+      audit?.emit(
+        buildApprovalEvent(
+          status.request.sessionId,
+          0,
+          "approval_resolved",
+          status,
+          status.request.correlationId,
+        ),
+      );
 
       return formatStatus(status) + "\n";
     }
