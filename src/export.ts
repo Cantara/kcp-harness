@@ -7,10 +7,12 @@
 //
 // Output: a directory of JSON evidence files + Markdown summary reports.
 
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { AuditReader, type AuditSummary, type SessionIndex } from "./audit-reader.js";
 import type { AuditEvent } from "./audit.js";
+import { canonicalJSON, sha256Hex } from "./canonical.js";
+import { signEvidence, type EvidenceSignature } from "./resolution-signature.js";
 
 /** Export configuration. */
 export interface ExportOptions {
@@ -24,6 +26,29 @@ export interface ExportOptions {
   dateRange?: { from: string; to: string };
   /** Organization name for the report header. */
   organization?: string;
+  /**
+   * Optional PKCS8 PEM ed25519 private key (inline PEM or a file path) to seal
+   * the bundle with. When present, the export writes a `signature.json` sealing
+   * a canonical index of every file it produced (path + sha256), so an auditor
+   * can prove the bundle is intact and unaltered. Reuses the harness's ed25519
+   * key mechanism — no new signing scheme.
+   */
+  signingKey?: string;
+  /** Optional key identifier recorded on the bundle signature. */
+  keyId?: string;
+}
+
+/** The canonical index a bundle signature commits to — every file and its hash. */
+export interface BundleSeal {
+  generator: string;
+  generatedAt: string;
+  format: string;
+  organization?: string;
+  dateRange: { from: string; to: string };
+  /** Every exported file, with the sha256 of its bytes at export time. */
+  files: Array<{ path: string; sha256: string }>;
+  /** Aggregate statistics, mirrored from the manifest. */
+  statistics: AuditSummary;
 }
 
 /** Result of an export operation. */
@@ -34,6 +59,8 @@ export interface ExportResult {
   files: string[];
   /** Summary statistics. */
   summary: AuditSummary;
+  /** Whether the bundle was sealed with a signature (signingKey supplied). */
+  signed: boolean;
 }
 
 /** Evidence entry for a compliance control. */
@@ -107,7 +134,52 @@ export async function exportEvidence(options: ExportOptions): Promise<ExportResu
     files.push(...euaiactFiles);
   }
 
-  return { outputDir: options.outputDir, files, summary };
+  // Seal the bundle: sign a canonical index of every file produced (path +
+  // sha256), so the whole export — not just individual receipts inside it — is
+  // tamper-evident. Written last so the seal covers every other file.
+  let signed = false;
+  if (options.signingKey) {
+    const seal = buildBundleSeal(options.outputDir, files, manifest.generatedAt, options.format, options.organization, summary, options.dateRange);
+    const signature: EvidenceSignature = await signEvidence(
+      loadSigningKey(options.signingKey),
+      canonicalJSON(seal),
+      options.keyId,
+    );
+    writeJSON(options.outputDir, "signature.json", { bundle: seal, signature });
+    files.push("signature.json");
+    signed = true;
+  }
+
+  return { outputDir: options.outputDir, files, summary, signed };
+}
+
+/** Resolve a signing-key option (inline PEM or a file path) to PEM text. */
+function loadSigningKey(key: string): string {
+  return key.includes("-----BEGIN") ? key : readFileSync(key, "utf-8");
+}
+
+/** Build the canonical bundle index the seal signs over. */
+function buildBundleSeal(
+  outputDir: string,
+  files: string[],
+  generatedAt: string,
+  format: string,
+  organization: string | undefined,
+  statistics: AuditSummary,
+  dateRange?: { from: string; to: string },
+): BundleSeal {
+  return {
+    generator: "kcp-harness",
+    generatedAt,
+    format,
+    ...(organization ? { organization } : {}),
+    dateRange: dateRange ?? { from: statistics.dateRange.first, to: statistics.dateRange.last },
+    files: files.map((path) => ({
+      path,
+      sha256: sha256Hex(readFileSync(join(outputDir, path), "utf-8")),
+    })),
+    statistics,
+  };
 }
 
 // -- SOC 2 Type II (Trust Services Criteria) ----------------------------------

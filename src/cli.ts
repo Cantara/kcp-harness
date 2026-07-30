@@ -225,6 +225,10 @@ async function main(): Promise<void> {
       const org = getFlag(args, "--org");
       const from = getFlag(args, "--from");
       const to = getFlag(args, "--to");
+      // Optional: seal the bundle with an ed25519 signature over its file index.
+      // Defaults to the harness's configured signing identity (purchase_receipts).
+      const signKey = getFlag(args, "--sign-key") ?? config?.governance.purchase_receipts?.private_key;
+      const keyId = getFlag(args, "--key-id") ?? config?.governance.purchase_receipts?.key_id;
 
       if (!existsSync(auditPath)) {
         process.stderr.write(`[kcp-harness] audit log not found: ${auditPath}\n`);
@@ -238,8 +242,12 @@ async function main(): Promise<void> {
           format,
           organization: org,
           dateRange: from || to ? { from: from ?? "", to: to ?? "" } : undefined,
+          ...(signKey ? { signingKey: signKey } : {}),
+          ...(keyId ? { keyId } : {}),
         });
-        process.stderr.write(`[kcp-harness] exported ${result.files.length} files to ${result.outputDir}\n`);
+        process.stderr.write(
+          `[kcp-harness] exported ${result.files.length} files to ${result.outputDir}${result.signed ? " (sealed)" : ""}\n`,
+        );
         process.stderr.write(`[kcp-harness]   ${result.summary.events} events, ${result.summary.sessions} sessions\n`);
         for (const f of result.files) {
           process.stdout.write(`  ${f}\n`);

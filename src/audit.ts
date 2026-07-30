@@ -13,9 +13,10 @@
 // - Session lifecycle events mark boundaries (start, end, drift)
 // - Budget snapshots recorded on every spend event
 
-import { appendFileSync, mkdirSync } from "node:fs";
+import { appendFileSync, mkdirSync, existsSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
 import type { SignatureResult } from "kcp-agent";
+import { canonicalJSON, sha256Hex } from "./canonical.js";
 import type { Classification } from "./classifier.js";
 import type { GovernanceDecision } from "./governor.js";
 import type { LedgerSnapshot } from "./budget-ledger.js";
@@ -49,6 +50,15 @@ export interface AuditEvent {
   sessionId: string;
   /** Monotonic sequence number within the session. */
   sequence: number;
+  /**
+   * Hash-chain link: the sha256 (hex) of the previous entry's canonical bytes.
+   * The first entry in a log carries {@link GENESIS_HASH}. Set by the writer at
+   * emit time — callers building events never populate it. Optional on the type
+   * for backward compatibility with pre-chain logs, but every entry a current
+   * writer emits carries one, making the JSONL log tamper-evident: a broken or
+   * reordered entry no longer matches the chain (see {@link verifyAuditChain}).
+   */
+  prevHash?: string;
   /**
    * Decision-record chain id: one correlation id per intercepted tool call,
    * shared by every verdict that call produces (govern → grounding →
@@ -183,18 +193,44 @@ export interface AuditEvent {
   };
 }
 
+/**
+ * Genesis link — the prevHash of the first entry in a chain. A fixed constant
+ * (64 hex zeros) so even the first entry commits to "no predecessor" rather
+ * than leaving the field absent, and an empty log has a well-defined head.
+ */
+export const GENESIS_HASH = "0".repeat(64);
+
+/** The sha256 (hex) of an entry's canonical bytes — the link its successor commits to. */
+export function hashAuditEntry(event: AuditEvent): string {
+  return sha256Hex(canonicalJSON(event));
+}
+
+/**
+ * Stamp an event with its hash-chain link and return the hash of the stamped
+ * entry (the link its successor will carry). Mutates `event.prevHash` in place
+ * so a caller holding the reference sees the chained record — the writers rely
+ * on this (InMemoryAuditLog stores the very object it was handed).
+ */
+function chain(event: AuditEvent, prevHash: string): string {
+  event.prevHash = prevHash;
+  return hashAuditEntry(event);
+}
+
 /** Append-only audit log writer. */
 export class AuditLog {
   private readonly path: string;
   private initialized = false;
+  /** Hash of the last entry written — the next entry's prevHash. */
+  private lastHash: string | undefined;
 
   constructor(path: string) {
     this.path = path;
   }
 
-  /** Emit an audit event to the log. */
+  /** Emit an audit event to the log, extending the hash chain. */
   emit(event: AuditEvent): void {
-    this.ensureDir();
+    this.ensureInit();
+    this.lastHash = chain(event, this.lastHash ?? GENESIS_HASH);
     const line = JSON.stringify(event) + "\n";
     appendFileSync(this.path, line, "utf-8");
   }
@@ -204,9 +240,13 @@ export class AuditLog {
     return this.path;
   }
 
-  private ensureDir(): void {
+  private ensureInit(): void {
     if (this.initialized) return;
     mkdirSync(dirname(this.path), { recursive: true });
+    // Continue an existing chain across writer restarts: seed lastHash from the
+    // tail of the file so a fresh writer over an existing log links to it rather
+    // than restarting from genesis (which would read as a break at re-open).
+    this.lastHash = tailHash(this.path);
     this.initialized = true;
   }
 }
@@ -214,14 +254,70 @@ export class AuditLog {
 /** Create an in-memory audit log for testing. */
 export class InMemoryAuditLog {
   readonly events: AuditEvent[] = [];
+  private lastHash: string | undefined;
 
   emit(event: AuditEvent): void {
+    this.lastHash = chain(event, this.lastHash ?? GENESIS_HASH);
     this.events.push(event);
   }
 
   getPath(): string {
     return ":memory:";
   }
+}
+
+/** The chain hash of the last valid entry in a JSONL log, or undefined if none. */
+function tailHash(path: string): string | undefined {
+  if (!existsSync(path)) return undefined;
+  const lines = readFileSync(path, "utf-8").split("\n");
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const trimmed = lines[i].trim();
+    if (!trimmed) continue;
+    try {
+      return hashAuditEntry(JSON.parse(trimmed) as AuditEvent);
+    } catch {
+      // Skip a malformed tail line and keep scanning upward.
+    }
+  }
+  return undefined;
+}
+
+/** Result of verifying an audit log's hash chain. */
+export interface ChainVerification {
+  /** Whether every entry links to its predecessor unbroken. */
+  valid: boolean;
+  /** 0-based index of the first entry that broke the chain (when invalid). */
+  brokenAt?: number;
+  /** Human-readable reason for the break (when invalid). */
+  reason?: string;
+}
+
+/**
+ * Verify an audit log's hash chain end to end. Each entry's prevHash must equal
+ * the sha256 of the previous entry's canonical bytes (the first must be
+ * {@link GENESIS_HASH}). Because an entry's own hash covers its prevHash, any
+ * tampered field breaks the link its successor carries, and any reordering
+ * breaks the very next link — both are detected. A hash chain cannot by itself
+ * detect tampering of the final entry (no successor commits to it); the export
+ * bundle and decision-trace signatures anchor the head for that.
+ */
+export function verifyAuditChain(events: AuditEvent[]): ChainVerification {
+  let expectedPrev = GENESIS_HASH;
+  for (let i = 0; i < events.length; i++) {
+    const event = events[i];
+    const prev = event.prevHash ?? GENESIS_HASH;
+    if (prev !== expectedPrev) {
+      return {
+        valid: false,
+        brokenAt: i,
+        reason:
+          `entry ${i} (sequence ${event.sequence}) prevHash ${prev} does not match ` +
+          `the expected ${expectedPrev} — the chain is broken, reordered, or tampered`,
+      };
+    }
+    expectedPrev = hashAuditEntry(event);
+  }
+  return { valid: true };
 }
 
 export type AuditWriter = AuditLog | InMemoryAuditLog;

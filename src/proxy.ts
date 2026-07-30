@@ -41,7 +41,7 @@ import {
 import { createSession, nextSequence, type SessionState } from "./session.js";
 import { DownstreamManager, type McpTool } from "./downstream.js";
 import { callKcpTool } from "./kcp-bridge.js";
-import { toTraceEvent, emitTrace } from "./trace-emit.js";
+import { toTraceEvent, emitTrace, signTraceEvent } from "./trace-emit.js";
 import type { DecisionTrace } from "kcp-agent";
 import type { BudgetCeiling } from "./budget-ledger.js";
 
@@ -530,11 +530,30 @@ export class HarnessProxy {
     if (!url || toolName !== "kcp_trace") return;
     try {
       const trace = JSON.parse(text) as DecisionTrace;
-      emitTrace(url, toTraceEvent(trace, {
+      const event = toTraceEvent(trace, {
         sessionId: this.session.id,
         project: process.cwd(),
         manifest: typeof args["manifest"] === "string" ? (args["manifest"] as string) : undefined,
-      }));
+      });
+
+      // Sign the trace with the harness's configured ed25519 identity (the same
+      // key that seals purchase receipts) so the emitted decision trace is
+      // tamper-evident. Fail-open, like every part of this telemetry path: an
+      // unreadable/invalid key degrades to an unsigned trace rather than
+      // dropping it, and the async signing never blocks the tool result.
+      const signingKey = this.config.governance.purchase_receipts;
+      if (signingKey) {
+        void (async () => {
+          try {
+            const pem = readFileSync(signingKey.private_key, "utf-8");
+            emitTrace(url, await signTraceEvent(pem, event, signingKey.key_id));
+          } catch {
+            emitTrace(url, event);
+          }
+        })();
+      } else {
+        emitTrace(url, event);
+      }
     } catch {
       /* fail-open: never let telemetry break governance */
     }
