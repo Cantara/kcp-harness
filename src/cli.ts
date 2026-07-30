@@ -19,6 +19,7 @@ import { generate, generateAll, listAgents } from "./integrations/generate.js";
 import type { IntegrationOptions } from "./integrations/types.js";
 import { exportEvidence } from "./export.js";
 import { DashboardServer } from "./dashboard/server.js";
+import { GovernHttpServer } from "./govern-http.js";
 import { runApprovals } from "./approvals-cli.js";
 import { AuditLog } from "./audit.js";
 
@@ -32,6 +33,7 @@ Usage:
   kcp-harness integrate --list                  List supported agents
   kcp-harness export   [options]               Export compliance evidence
   kcp-harness dashboard [options]              Launch compliance dashboard
+  kcp-harness govern-serve [--port p] [--host h] Serve POST /govern over HTTP
   kcp-harness approvals list [--state s]        List human-approval tickets
   kcp-harness approvals approve <id> --reviewer <name> --policy-ref <ref> [--note n]
   kcp-harness approvals dismiss <id> --reviewer <name> --policy-ref <ref> [--note n]
@@ -281,6 +283,29 @@ async function main(): Promise<void> {
       const shutdown = async () => {
         process.stderr.write(`\n[kcp-harness] shutting down dashboard\n`);
         await dashboard.stop();
+        process.exit(0);
+      };
+      process.on("SIGINT", shutdown);
+      process.on("SIGTERM", shutdown);
+      break;
+    }
+
+    case "govern-serve": {
+      // Opt-in HTTP adjudicator: POST /govern accepts an in-memory manifest +
+      // a tool call and returns the GovernanceDecision as JSON, with permissive
+      // CORS so a browser/sidecar host can call it. The manifest travels in the
+      // request body, so this server needs no harness.yaml.
+      const port = Number(getFlag(args, "--port") ?? "7738");
+      const host = getFlag(args, "--host") ?? "127.0.0.1";
+
+      const server = new GovernHttpServer({ port, host });
+      await server.start();
+      process.stderr.write(`[kcp-harness] govern endpoint running at ${server.getAddress()}/govern\n`);
+      process.stderr.write(`[kcp-harness] POST an in-memory manifest + tool call — fail-closed adjudication\n`);
+
+      const shutdown = async () => {
+        process.stderr.write(`\n[kcp-harness] shutting down govern endpoint\n`);
+        await server.stop();
         process.exit(0);
       };
       process.on("SIGINT", shutdown);
