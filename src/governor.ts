@@ -564,6 +564,8 @@ export interface SkillEligibility {
     paths?: string[];
     capabilities?: string[];
     spend?: { max_spend?: number; allowed_vendors?: string[]; currency?: string };
+    /** Explicit prohibitions that override the allowlist, fail-closed (RFC-0029 / KCP 0.31). */
+    deny?: { tools?: string[]; paths?: string[]; capabilities?: string[] };
   };
 }
 
@@ -580,14 +582,6 @@ export interface SkillEligibility {
  * that earlier gate's detail becomes the reason.
  */
 /**
- * Recover a unit's `action_scope.spend` envelope from the raw manifest (#139).
- * kcp-agent's parser preserves only tools/paths/capabilities under action_scope,
- * so the spend allowlist — frozen as `action_scope.spend { max_spend,
- * allowed_vendors, currency }` — is read back from the source YAML and merged
- * onto the parsed scope. Best-effort and fail-safe: an unreadable manifest (e.g.
- * a remote URL) or an absent spend block simply yields the base scope unchanged.
- */
-/**
  * Coerce a spend amount the same way kcp-agent's own manifest parser does
  * (`Number(v)`, not a strict `typeof === "number"` check) — so a quoted
  * numeric YAML value (`max_spend: "50"`) still ends up as a real ceiling
@@ -600,7 +594,14 @@ function asSpendAmount(v: unknown): number | undefined {
   return Number.isNaN(n) ? undefined : n;
 }
 
-/** Recover the spend envelope from raw manifest YAML text (kcp-agent's parser drops it, #139). */
+/**
+ * Recover the `action_scope` sub-fields kcp-agent's parser drops from the raw
+ * manifest YAML text: the `spend` envelope (#139) and the `deny` negative scope
+ * (RFC-0029 / KCP 0.31). kcp-agent preserves only tools/paths/capabilities under
+ * action_scope, so both are read back here and merged onto the parsed scope.
+ * Recovering `deny` is load-bearing, not cosmetic — the conformance gate can only
+ * enforce a prohibition it can see, so a dropped `deny` would silently fail OPEN.
+ */
 function spendScopeFromText(
   base: { tools?: string[]; paths?: string[]; capabilities?: string[] } | undefined,
   rawText: string,
@@ -611,17 +612,32 @@ function spendScopeFromText(
     | undefined;
   const unit = raw?.units?.find((u) => u["id"] === skillId);
   const scope = unit && typeof unit["action_scope"] === "object" ? (unit["action_scope"] as Record<string, unknown>) : undefined;
+
   const spendRaw = scope && typeof scope["spend"] === "object" ? (scope["spend"] as Record<string, unknown>) : undefined;
-  if (!spendRaw) return base;
+  let spend: { max_spend?: number; allowed_vendors?: string[]; currency?: string } | undefined;
+  if (spendRaw) {
+    const s: { max_spend?: number; allowed_vendors?: string[]; currency?: string } = {};
+    const maxSpend = asSpendAmount(spendRaw["max_spend"]);
+    if (maxSpend !== undefined) s.max_spend = maxSpend;
+    if (Array.isArray(spendRaw["allowed_vendors"])) s.allowed_vendors = (spendRaw["allowed_vendors"] as unknown[]).map(String);
+    if (typeof spendRaw["currency"] === "string") s.currency = spendRaw["currency"] as string;
+    if (s.max_spend !== undefined || s.allowed_vendors !== undefined || s.currency !== undefined) spend = s;
+  }
 
-  const spend: { max_spend?: number; allowed_vendors?: string[]; currency?: string } = {};
-  const maxSpend = asSpendAmount(spendRaw["max_spend"]);
-  if (maxSpend !== undefined) spend.max_spend = maxSpend;
-  if (Array.isArray(spendRaw["allowed_vendors"])) spend.allowed_vendors = (spendRaw["allowed_vendors"] as unknown[]).map(String);
-  if (typeof spendRaw["currency"] === "string") spend.currency = spendRaw["currency"] as string;
+  // deny (RFC-0029 / KCP 0.31): the explicit negative scope, same shape as the
+  // allowlist. Each dimension recovered only when it is a string array.
+  const denyRaw = scope && typeof scope["deny"] === "object" ? (scope["deny"] as Record<string, unknown>) : undefined;
+  let deny: { tools?: string[]; paths?: string[]; capabilities?: string[] } | undefined;
+  if (denyRaw) {
+    const d: { tools?: string[]; paths?: string[]; capabilities?: string[] } = {};
+    for (const dim of ["tools", "paths", "capabilities"] as const) {
+      if (Array.isArray(denyRaw[dim])) d[dim] = (denyRaw[dim] as unknown[]).map(String);
+    }
+    if (d.tools || d.paths || d.capabilities) deny = d;
+  }
 
-  if (spend.max_spend === undefined && spend.allowed_vendors === undefined && spend.currency === undefined) return base;
-  return { ...(base ?? {}), spend };
+  if (!spend && !deny) return base;
+  return { ...(base ?? {}), ...(spend ? { spend } : {}), ...(deny ? { deny } : {}) };
 }
 
 function withSpendScope(
@@ -637,11 +653,12 @@ function withSpendScope(
 }
 
 /**
- * Recover the spend envelope from an in-memory manifest source — no `node:fs`.
- * The raw `text` form still carries the bytes the parser drops, so the spend
- * allowlist survives; a pre-parsed `Manifest` has no bytes to re-read, so the
- * base scope stands (identical to the remote-URL case withSpendScope already
- * handles fail-safe). Best-effort: any parse failure yields the base scope.
+ * Recover the dropped action_scope sub-fields from an in-memory manifest source —
+ * no `node:fs`. The raw `text` form still carries the bytes the parser drops, so
+ * the spend envelope and deny negative scope survive; a pre-parsed `Manifest` has
+ * no bytes to re-read, so the base scope stands (identical to the remote-URL case
+ * withSpendScope already handles fail-safe). Best-effort: any parse failure yields
+ * the base scope.
  */
 function withSpendScopeFromSource(
   base: { tools?: string[]; paths?: string[]; capabilities?: string[] } | undefined,

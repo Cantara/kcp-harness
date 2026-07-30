@@ -12,7 +12,7 @@ import { join } from "node:path";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { generateKeyPairSync } from "node:crypto";
-import { checkConformance, type ActionScope, type ObservedAction } from "../src/conformance.js";
+import { checkConformance, deniesToken, type ActionScope, type ObservedAction } from "../src/conformance.js";
 import { HarnessProxy } from "../src/proxy.js";
 import { InMemoryAuditLog } from "../src/audit.js";
 import type { GovernancePolicy, GovernedDomain, HarnessConfig } from "../src/config.js";
@@ -82,6 +82,68 @@ describe("checkConformance — pure adjudication", () => {
     expect(checkConformance({ tool: "Write", paths: ["docs/x.md"] }, pathsOnly).passed).toBe(true);
     // A path outside the allowlist is still held.
     expect(checkConformance({ tool: "Write", paths: ["src/x.ts"] }, pathsOnly).passed).toBe(false);
+  });
+});
+
+// -- Deny dimension (RFC-0029 / KCP 0.31): action_scope.deny is an explicit
+//    negative scope that OVERRIDES the allowlist, fail-closed (deny-overrides). --
+
+describe("checkConformance — action_scope.deny (RFC-0029 / KCP 0.31)", () => {
+  it("denies a tool that is BOTH allowed and forbidden — deny overrides allow", () => {
+    // `shell` is on the allowlist, but also on deny.tools. Deny wins.
+    const scope = { tools: ["git", "shell"], deny: { tools: ["shell"] } } as ActionScope;
+    const v = checkConformance({ tool: "shell" }, scope);
+    expect(v.passed).toBe(false);
+    expect(v.reason).toMatch(/deny/i);
+    expect(v.evidence?.target).toBe("shell");
+  });
+
+  it("still allows a tool that is allowlisted and not denied", () => {
+    const scope = { tools: ["git", "shell"], deny: { tools: ["shell"] } } as ActionScope;
+    expect(checkConformance({ tool: "git" }, scope).passed).toBe(true);
+  });
+
+  it("carves a forbidden hole inside an allowed path region (deny glob overrides allow glob)", () => {
+    const scope = {
+      paths: ["schema/**"],
+      deny: { paths: ["schema/secrets/**"] },
+    } as ActionScope;
+    // Inside the allowed region but under the deny carve-out → held.
+    const denied = checkConformance({ tool: "Read", paths: ["schema/secrets/key.yaml"] }, scope);
+    expect(denied.passed).toBe(false);
+    expect(denied.reason).toMatch(/deny/i);
+    expect(denied.evidence?.target).toBe("schema/secrets/key.yaml");
+    // Elsewhere in the allowed region, not under the carve-out → allowed.
+    expect(checkConformance({ tool: "Read", paths: ["schema/keys.yaml"] }, scope).passed).toBe(true);
+  });
+
+  it("denies a capability that is both allowed and forbidden", () => {
+    const scope = {
+      capabilities: ["deploy", "network"],
+      deny: { capabilities: ["network"] },
+    } as ActionScope;
+    const v = checkConformance({ tool: "Bash", capabilities: ["network"] }, scope);
+    expect(v.passed).toBe(false);
+    expect(v.reason).toMatch(/deny/i);
+    expect(v.evidence?.target).toBe("network");
+  });
+
+  it("treats an empty deny object as a no-op — an allowed action still passes", () => {
+    const scope = { tools: ["git"], deny: {} } as ActionScope;
+    expect(checkConformance({ tool: "git" }, scope).passed).toBe(true);
+  });
+
+  it("deniesToken adjudicates one token against the deny list (exported rule)", () => {
+    const scope = {
+      tools: ["git", "shell"],
+      paths: ["schema/**"],
+      deny: { tools: ["shell"], paths: ["schema/secrets/**"] },
+    } as ActionScope;
+    expect(deniesToken(scope, "tools", "shell")).toBe(true);
+    expect(deniesToken(scope, "tools", "git")).toBe(false);
+    expect(deniesToken(scope, "paths", "schema/secrets/key.yaml")).toBe(true);
+    expect(deniesToken(scope, "paths", "schema/keys.yaml")).toBe(false);
+    expect(deniesToken(undefined, "tools", "shell")).toBe(false);
   });
 });
 
@@ -299,6 +361,42 @@ describe("HarnessProxy — conformance gate", () => {
     // A conformant action opens no ticket.
     const tickets = await proxy.getApprovalProvider()!.list();
     expect(tickets).toHaveLength(0);
+  });
+
+  it("holds an action a deny carves out even though the allowlist grants the region (RFC-0029)", async () => {
+    // guarded-docs-skill allows Read/Grep on docs/ + skills/, but deny.paths
+    // carves docs/secrets/** out of that allowed region and deny.tools forbids
+    // Grep. The deny is declared in the manifest YAML but kcp-agent's parser
+    // drops it — the governor must recover it from the raw manifest, or the gate
+    // fails OPEN. This exercises that recovery end-to-end through the proxy.
+    await call(proxy, 1, "Skill", { skill: "guarded-docs-skill" });
+    expect(audit.events.some((e) => e.type === "skill_loaded")).toBe(true);
+
+    // A Read inside the allowed region but under the deny carve-out is held.
+    const result = await call(proxy, 2, "Read", { file_path: "docs/secrets/prod.key" });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toMatch(/CONFORMANCE BLOCKED/);
+
+    // The signed decision trace (conformance_verdict) is blocked and cites the deny.
+    const verdict = audit.events.find((e) => e.type === "conformance_verdict");
+    expect(verdict).toBeDefined();
+    expect(verdict!.outcome).toBe("blocked");
+    expect(verdict!.conformance!.skillId).toBe("guarded-docs-skill");
+    expect(verdict!.conformance!.passed).toBe(false);
+    expect(verdict!.conformance!.reason).toMatch(/deny\.paths/);
+    expect(verdict!.conformance!.reason).toMatch(/deny overrides allow, fail-closed/);
+  });
+
+  it("still allows an action elsewhere in the deny-guarded skill's allowed region", async () => {
+    // Same skill; a Read outside the carved-out hole passes — deny narrows, never widens.
+    await call(proxy, 1, "Skill", { skill: "guarded-docs-skill" });
+    await call(proxy, 2, "Read", { file_path: "docs/deploy-runbook.md" });
+
+    const verdict = audit.events.find((e) => e.type === "conformance_verdict");
+    expect(verdict).toBeDefined();
+    expect(verdict!.outcome).toBe("approved");
+    expect(verdict!.conformance!.passed).toBe(true);
+    expect((await proxy.getApprovalProvider()!.list())).toHaveLength(0);
   });
 
   it("reuses the open ticket when an out-of-scope action is retried", async () => {
