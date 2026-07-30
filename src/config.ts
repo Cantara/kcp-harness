@@ -143,6 +143,14 @@ export interface AuditConfig {
 export interface DashboardConfig {
   /** Full URL of the kcp-dashboard /trace endpoint (e.g. http://localhost:7734/trace). */
   url?: string;
+  /**
+   * Path to a PKCS8 PEM ed25519 private key. When set, emitted decision traces
+   * are Ed25519-signed (trace-emit.ts) so the dashboard, or any later reader,
+   * can verify the trace is authentic and unedited. Absent = unsigned traces.
+   */
+  private_key?: string;
+  /** Optional key identifier recorded on the trace signature for audit/rotation. */
+  key_id?: string;
 }
 
 /** Top-level harness configuration. */
@@ -214,7 +222,11 @@ export function parseConfig(text: string): HarnessConfig {
 function parseDashboard(raw: unknown): DashboardConfig | undefined {
   if (!raw || typeof raw !== "object") return undefined;
   const d = raw as Record<string, unknown>;
-  return { url: d["url"] === undefined ? undefined : String(d["url"]) };
+  return {
+    url: d["url"] === undefined ? undefined : String(d["url"]),
+    ...(d["private_key"] === undefined ? {} : { private_key: String(d["private_key"]) }),
+    ...(d["key_id"] === undefined ? {} : { key_id: String(d["key_id"]) }),
+  };
 }
 
 function parseApprovals(raw: unknown): ApprovalsConfig | undefined {

@@ -31,6 +31,7 @@ Usage:
   kcp-harness integrate <agent> [options]       Generate agent integration files
   kcp-harness integrate --list                  List supported agents
   kcp-harness export   [options]               Export compliance evidence
+                       [--sign-key key.pem] [--key-id id]  Ed25519-sign the manifest
   kcp-harness dashboard [options]              Launch compliance dashboard
   kcp-harness approvals list [--state s]        List human-approval tickets
   kcp-harness approvals approve <id> --reviewer <name> --policy-ref <ref> [--note n]
@@ -225,10 +226,21 @@ async function main(): Promise<void> {
       const org = getFlag(args, "--org");
       const from = getFlag(args, "--from");
       const to = getFlag(args, "--to");
+      const signKeyPath = getFlag(args, "--sign-key");
+      const keyId = getFlag(args, "--key-id");
 
       if (!existsSync(auditPath)) {
         process.stderr.write(`[kcp-harness] audit log not found: ${auditPath}\n`);
         process.exit(1);
+      }
+
+      let signingKey: { privatePem: string; keyId?: string } | undefined;
+      if (signKeyPath) {
+        if (!existsSync(signKeyPath)) {
+          process.stderr.write(`[kcp-harness] signing key not found: ${signKeyPath}\n`);
+          process.exit(1);
+        }
+        signingKey = { privatePem: readFileSync(signKeyPath, "utf-8"), ...(keyId ? { keyId } : {}) };
       }
 
       try {
@@ -238,9 +250,10 @@ async function main(): Promise<void> {
           format,
           organization: org,
           dateRange: from || to ? { from: from ?? "", to: to ?? "" } : undefined,
+          ...(signingKey ? { signingKey } : {}),
         });
         process.stderr.write(`[kcp-harness] exported ${result.files.length} files to ${result.outputDir}\n`);
-        process.stderr.write(`[kcp-harness]   ${result.summary.events} events, ${result.summary.sessions} sessions\n`);
+        process.stderr.write(`[kcp-harness]   ${result.summary.events} events, ${result.summary.sessions} sessions${result.signed ? " (manifest signed)" : ""}\n`);
         for (const f of result.files) {
           process.stdout.write(`  ${f}\n`);
         }

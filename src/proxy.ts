@@ -41,7 +41,7 @@ import {
 import { createSession, nextSequence, type SessionState } from "./session.js";
 import { DownstreamManager, type McpTool } from "./downstream.js";
 import { callKcpTool } from "./kcp-bridge.js";
-import { toTraceEvent, emitTrace } from "./trace-emit.js";
+import { toTraceEvent, emitTrace, signTraceEvent } from "./trace-emit.js";
 import type { DecisionTrace } from "kcp-agent";
 import type { BudgetCeiling } from "./budget-ledger.js";
 
@@ -526,15 +526,29 @@ export class HarnessProxy {
    * here is swallowed so telemetry never affects the tool result.
    */
   private maybeEmitTrace(toolName: string, args: Record<string, unknown>, text: string): void {
-    const url = this.config.dashboard?.url;
+    const dash = this.config.dashboard;
+    const url = dash?.url;
     if (!url || toolName !== "kcp_trace") return;
     try {
       const trace = JSON.parse(text) as DecisionTrace;
-      emitTrace(url, toTraceEvent(trace, {
+      const event = toTraceEvent(trace, {
         sessionId: this.session.id,
         project: process.cwd(),
         manifest: typeof args["manifest"] === "string" ? (args["manifest"] as string) : undefined,
-      }));
+      });
+      // Sign the trace when a key is configured, then emit — non-repudiable
+      // telemetry. Signing is async; keep the whole path fail-open so a bad key
+      // or unreachable dashboard never affects the tool result.
+      if (dash.private_key) {
+        const pem = readFileSync(dash.private_key, "utf-8");
+        void signTraceEvent(pem, event, dash.key_id)
+          .then((signed) => emitTrace(url, signed))
+          .catch(() => {
+            /* fail-open: never let telemetry break governance */
+          });
+      } else {
+        emitTrace(url, event);
+      }
     } catch {
       /* fail-open: never let telemetry break governance */
     }

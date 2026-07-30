@@ -10,6 +10,7 @@
 // See kcp-dashboard docs/thought-graph-phase2.md for the wire contract.
 
 import type { DecisionTrace } from "kcp-agent";
+import { signDetached, verifyDetached, type DetachedSignature } from "./resolution-signature.js";
 
 /** One unit's gate-cascade verdict in the wire event. */
 export interface TraceEventUnit {
@@ -34,6 +35,13 @@ export interface TraceEvent {
   skipped: number;
   gate_summary: Array<{ gate: string; passed: number; failed: number }>;
   units: TraceEventUnit[];
+  /**
+   * Detached ed25519 signature over the trace's canonical bytes (all fields
+   * except this one). Present only when a signing key is configured. Makes the
+   * decision trace non-repudiable — the dashboard, or any later reader, verifies
+   * it with the signer's public key and detects any post-hoc edit.
+   */
+  signature?: DetachedSignature;
 }
 
 /** Context the trace itself doesn't carry (session, project, source manifest). */
@@ -77,6 +85,50 @@ export function toTraceEvent(trace: DecisionTrace, ctx: TraceContext): TraceEven
     })),
     units,
   };
+}
+
+/**
+ * Deterministic serialization of a trace event for signing — every field except
+ * `signature` itself, in a fixed order, so a signature made today verifies
+ * byte-for-byte tomorrow regardless of object construction order.
+ */
+export function canonicalTraceEvent(event: TraceEvent): string {
+  const { signature: _omit, ...rest } = event;
+  return JSON.stringify({
+    kind: rest.kind,
+    session_id: rest.session_id,
+    ts: rest.ts,
+    ...(rest.project !== undefined ? { project: rest.project } : {}),
+    ...(rest.manifest !== undefined ? { manifest: rest.manifest } : {}),
+    task: rest.task,
+    ...(rest.as_of !== undefined ? { as_of: rest.as_of } : {}),
+    selected: rest.selected,
+    skipped: rest.skipped,
+    gate_summary: rest.gate_summary,
+    units: rest.units,
+  });
+}
+
+/**
+ * Sign a decision-trace event with a PKCS8 PEM ed25519 private key, returning a
+ * new event with the detached signature attached. Reuses the harness's single
+ * Ed25519 mechanism (resolution-signature.ts).
+ */
+export async function signTraceEvent(
+  privatePem: string,
+  event: TraceEvent,
+  keyId?: string,
+): Promise<TraceEvent> {
+  const signature = await signDetached(privatePem, canonicalTraceEvent(event), keyId);
+  return { ...event, signature };
+}
+
+/**
+ * Verify a signed trace event over its canonical bytes. Fail-closed: an unsigned
+ * event, or one whose fields were edited after signing, returns false.
+ */
+export async function verifyTraceEvent(event: TraceEvent, trustedKeys?: string[]): Promise<boolean> {
+  return verifyDetached(canonicalTraceEvent(event), event.signature, trustedKeys);
 }
 
 /**

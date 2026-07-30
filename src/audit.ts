@@ -13,8 +13,9 @@
 // - Session lifecycle events mark boundaries (start, end, drift)
 // - Budget snapshots recorded on every spend event
 
-import { appendFileSync, mkdirSync } from "node:fs";
+import { appendFileSync, mkdirSync, existsSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
+import { GENESIS_HASH, hashAuditLine } from "./audit-chain.js";
 import type { SignatureResult } from "kcp-agent";
 import type { Classification } from "./classifier.js";
 import type { GovernanceDecision } from "./governor.js";
@@ -49,6 +50,13 @@ export interface AuditEvent {
   sessionId: string;
   /** Monotonic sequence number within the session. */
   sequence: number;
+  /**
+   * sha256 of the previous entry's canonical line, chaining this entry to the
+   * one before it (audit-chain.ts). The first entry carries GENESIS_HASH. Stamped
+   * by the log writer at emit time — builders leave it absent. A tampered or
+   * reordered entry breaks the chain and is detectable via verifyAuditChain.
+   */
+  prevHash?: string;
   /**
    * Decision-record chain id: one correlation id per intercepted tool call,
    * shared by every verdict that call produces (govern → grounding →
@@ -183,20 +191,26 @@ export interface AuditEvent {
   };
 }
 
-/** Append-only audit log writer. */
+/** Append-only audit log writer. Hash-chains every entry (audit-chain.ts). */
 export class AuditLog {
   private readonly path: string;
   private initialized = false;
+  /** sha256 of the last-written entry's canonical line; seeds the next prevHash. */
+  private lastHash: string | undefined;
 
   constructor(path: string) {
     this.path = path;
   }
 
-  /** Emit an audit event to the log. */
+  /** Emit an audit event to the log, stamping its prevHash into the chain. */
   emit(event: AuditEvent): void {
     this.ensureDir();
-    const line = JSON.stringify(event) + "\n";
-    appendFileSync(this.path, line, "utf-8");
+    // Seed the chain head from any pre-existing log so a restart continues it.
+    if (this.lastHash === undefined) this.lastHash = readChainHead(this.path);
+    event.prevHash = this.lastHash;
+    const line = JSON.stringify(event);
+    appendFileSync(this.path, line + "\n", "utf-8");
+    this.lastHash = hashAuditLine(line);
   }
 
   /** Get the log file path. */
@@ -211,17 +225,39 @@ export class AuditLog {
   }
 }
 
-/** Create an in-memory audit log for testing. */
+/** Create an in-memory audit log for testing. Hash-chains like the file writer. */
 export class InMemoryAuditLog {
   readonly events: AuditEvent[] = [];
+  private lastHash = GENESIS_HASH;
 
   emit(event: AuditEvent): void {
+    event.prevHash = this.lastHash;
     this.events.push(event);
+    this.lastHash = hashAuditLine(JSON.stringify(event));
+  }
+
+  /** The canonical JSONL lines, in order — the form verifyAuditChain expects. */
+  lines(): string[] {
+    return this.events.map((e) => JSON.stringify(e));
   }
 
   getPath(): string {
     return ":memory:";
   }
+}
+
+/**
+ * Recover the chain head (sha256 of the last entry's canonical line) from an
+ * existing log so a fresh writer continues the same chain across a restart.
+ * Returns GENESIS_HASH when the log is absent or empty. Reads the whole file —
+ * acceptable for the harness's per-session logs; a rotated log starts a new
+ * chain from its first entry, anchored by the signed export's head commitment.
+ */
+function readChainHead(path: string): string {
+  if (!existsSync(path)) return GENESIS_HASH;
+  const lines = readFileSync(path, "utf-8").split("\n").filter((l) => l.trim().length > 0);
+  const last = lines[lines.length - 1];
+  return last ? hashAuditLine(last) : GENESIS_HASH;
 }
 
 export type AuditWriter = AuditLog | InMemoryAuditLog;

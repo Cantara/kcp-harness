@@ -7,6 +7,7 @@
 import { createReadStream, existsSync, statSync } from "node:fs";
 import { createInterface } from "node:readline";
 import { correlationKey } from "./correlation.js";
+import { verifyAuditChain, type ChainVerification } from "./audit-chain.js";
 import type { AuditEvent, AuditEventType } from "./audit.js";
 
 /** Filter criteria for querying audit events. */
@@ -225,6 +226,22 @@ export class AuditReader {
     const key = correlationKey(correlationId);
     const chains = await this.chains();
     return chains.find((c) => c.correlationId === key);
+  }
+
+  /**
+   * Verify the log's hash chain (audit-chain.ts): every entry commits to the
+   * exact bytes of the one before it, so a tampered or reordered entry is
+   * detectable. Reads the raw lines in file order — hashing the stored bytes,
+   * not a re-serialization. An absent log is a valid empty chain.
+   */
+  async verifyChain(): Promise<ChainVerification> {
+    if (!existsSync(this.path)) return { valid: true, entries: 0, headHash: "0".repeat(64) };
+    const lines: string[] = [];
+    const rl = createInterface({ input: createReadStream(this.path, "utf-8"), crlfDelay: Infinity });
+    for await (const line of rl) {
+      if (line.trim()) lines.push(line);
+    }
+    return verifyAuditChain(lines);
   }
 
   /** Check if the audit log file exists. */

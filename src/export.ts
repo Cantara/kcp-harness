@@ -10,6 +10,7 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { AuditReader, type AuditSummary, type SessionIndex } from "./audit-reader.js";
+import { signDetached, type DetachedSignature } from "./resolution-signature.js";
 import type { AuditEvent } from "./audit.js";
 
 /** Export configuration. */
@@ -24,6 +25,14 @@ export interface ExportOptions {
   dateRange?: { from: string; to: string };
   /** Organization name for the report header. */
   organization?: string;
+  /**
+   * When set, the manifest is Ed25519-signed with this PKCS8 PEM private key and
+   * a detached `signature.json` is written alongside it. The manifest commits to
+   * the audit chain head, so the signature anchors the whole evidence bundle —
+   * tampering the manifest, or any audit entry it commits to, breaks it. Absent =
+   * an unsigned bundle (backward-compatible).
+   */
+  signingKey?: { privatePem: string; keyId?: string };
 }
 
 /** Result of an export operation. */
@@ -34,6 +43,8 @@ export interface ExportResult {
   files: string[];
   /** Summary statistics. */
   summary: AuditSummary;
+  /** True when the manifest was Ed25519-signed (a `signature.json` was written). */
+  signed?: boolean;
 }
 
 /** Evidence entry for a compliance control. */
@@ -68,6 +79,11 @@ export async function exportEvidence(options: ExportOptions): Promise<ExportResu
   // Create output directories
   mkdirSync(options.outputDir, { recursive: true });
 
+  // Verify the source audit log's hash chain and commit to its head. The head
+  // is a single value that commits to every entry, so signing the manifest
+  // anchors the whole log — including the final entry a chain walk cannot pin.
+  const chain = await reader.verifyChain();
+
   // Write manifest
   const manifest = {
     generator: "kcp-harness",
@@ -76,9 +92,31 @@ export async function exportEvidence(options: ExportOptions): Promise<ExportResu
     format: options.format,
     dateRange: options.dateRange ?? summary.dateRange,
     statistics: summary,
+    auditChain: {
+      algorithm: "sha256",
+      head: chain.headHash,
+      entries: chain.entries,
+      verified: chain.valid,
+    },
   };
-  writeJSON(options.outputDir, "manifest.json", manifest);
+  const manifestBytes = JSON.stringify(manifest, null, 2) + "\n";
+  writeFile(options.outputDir, "manifest.json", manifestBytes);
   files.push("manifest.json");
+
+  // Sign the manifest bytes (and thereby the chain head they commit to). The
+  // detached signature is written verbatim over the exact bytes on disk, so a
+  // verifier re-reads manifest.json and checks it byte-for-byte.
+  let signed = false;
+  if (options.signingKey) {
+    const signature: DetachedSignature = await signDetached(
+      options.signingKey.privatePem,
+      manifestBytes,
+      options.signingKey.keyId,
+    );
+    writeJSON(options.outputDir, "signature.json", signature);
+    files.push("signature.json");
+    signed = true;
+  }
 
   // Write raw data
   mkdirSync(join(options.outputDir, "raw"), { recursive: true });
@@ -107,7 +145,7 @@ export async function exportEvidence(options: ExportOptions): Promise<ExportResu
     files.push(...euaiactFiles);
   }
 
-  return { outputDir: options.outputDir, files, summary };
+  return { outputDir: options.outputDir, files, summary, signed };
 }
 
 // -- SOC 2 Type II (Trust Services Criteria) ----------------------------------

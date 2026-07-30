@@ -180,3 +180,70 @@ function loadKeyMaterialSafe(entry: string): string | undefined {
     return undefined;
   }
 }
+
+/**
+ * A detached ed25519 signature over an arbitrary canonical message. Same
+ * envelope shape as a ResolutionSignature and the SAME key mechanism — reused by
+ * the signed decision trace (trace-emit.ts) and the signed compliance export
+ * (export.ts) so the harness has exactly one Ed25519 signing path, not three.
+ */
+export interface DetachedSignature {
+  algorithm: "ed25519";
+  /** base64 detached signature bytes over the canonical message. */
+  value: string;
+  /** Signer public key (PEM SPKI, base64/hex DER, or raw 32-byte). */
+  publicKey: string;
+  /** Optional key identifier, recorded for audit/rotation. */
+  keyId?: string;
+}
+
+/**
+ * Sign an arbitrary canonical message with a PKCS8 PEM ed25519 private key,
+ * deriving the matching SPKI public key. The caller owns canonicalization — it
+ * must serialize the same bytes at verify time. Reuses the module's signing path.
+ */
+export async function signDetached(
+  privatePem: string,
+  message: string,
+  keyId?: string,
+): Promise<DetachedSignature> {
+  const priv = createPrivateKey(privatePem);
+  const publicKeyPem = createPublicKey(priv).export({ type: "spki", format: "pem" }).toString();
+  const pkcs8Der = priv.export({ type: "pkcs8", format: "der" });
+  const key = await webcrypto.subtle.importKey("pkcs8", pkcs8Der, { name: "Ed25519" }, false, ["sign"]);
+  const value = await signPayload(key, message);
+  return { algorithm: "ed25519", value, publicKey: publicKeyPem, ...(keyId ? { keyId } : {}) };
+}
+
+/**
+ * Verify a detached ed25519 signature over its canonical message. Fail-closed:
+ * returns false for any missing/malformed input rather than throwing. When
+ * `trustedKeys` is non-empty the signature must verify against one of them
+ * (binding to a pinned identity); otherwise the envelope's embedded public key
+ * is used (integrity, self-attesting for identity).
+ */
+export async function verifyDetached(
+  message: string,
+  signature: DetachedSignature | undefined,
+  trustedKeys?: string[],
+): Promise<boolean> {
+  if (!signature || signature.algorithm !== "ed25519") return false;
+  const sigBytes = decodeBytes(signature.value);
+  if (!sigBytes || sigBytes.length !== 64) return false;
+  const bytes = new TextEncoder().encode(message);
+
+  const candidates =
+    trustedKeys && trustedKeys.length > 0
+      ? trustedKeys.map(loadKeyMaterialSafe).filter((k): k is string => k !== undefined)
+      : [signature.publicKey];
+
+  for (const material of candidates) {
+    try {
+      const key = await importPublicKey(material);
+      if (await webcrypto.subtle.verify("Ed25519", key, sigBytes, bytes)) return true;
+    } catch {
+      // A key we cannot import or that does not verify never grants trust.
+    }
+  }
+  return false;
+}
