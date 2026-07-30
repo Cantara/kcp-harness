@@ -25,6 +25,22 @@
 import { normalizePath, matchesPrefix } from "./classifier.js";
 
 /**
+ * A governed skill's explicit NEGATIVE scope — the tools, paths, and capabilities
+ * a procedure MUST NOT touch, even when the allowlist grants them (RFC-0029 / KCP
+ * 0.31, SPEC §4.3a). Same shape as the allowlist; every entry is a prohibition.
+ * A denylist can only narrow what the allowlist bounded — it can never widen a
+ * skill's reach — so a deny is always the safe direction by construction.
+ */
+export interface DenyScope {
+  /** Tool names the skill MUST NOT invoke, even if allowlisted. */
+  tools?: string[];
+  /** Paths (globs permitted) the skill MUST NOT read or write, even if allowlisted. */
+  paths?: string[];
+  /** Capabilities the skill MUST NOT exercise, even if allowlisted. */
+  capabilities?: string[];
+}
+
+/**
  * A governed skill's declared action scope — the tools, paths, and capabilities
  * a procedure is permitted to touch when invoked (KCP `Unit.action_scope`, #100).
  */
@@ -32,6 +48,16 @@ export interface ActionScope {
   tools?: string[];
   paths?: string[];
   capabilities?: string[];
+  /**
+   * Explicit negative scope — the complement of the allowlist (RFC-0029 / KCP
+   * 0.31, SPEC §4.3a). Same `{tools, paths, capabilities}` shape, but every entry
+   * is a PROHIBITION: a token listed here is denied even when the allowlist above
+   * grants it. `deny` overrides allow, fail-closed (deny-overrides). An empty
+   * `deny` object is a no-op. Lets an author allow a broad region and carve a
+   * forbidden hole inside it (`paths: ["schema/**"]` + `deny.paths:
+   * ["schema/secrets/**"]`) without enumerating the complement.
+   */
+  deny?: DenyScope;
   /**
    * Spend authority for a governed procedure that transacts value (#139). A
    * PURCHASE action is held unless its vendor, currency, and amount all fall
@@ -102,6 +128,8 @@ export interface ConformanceVerdict {
     scopePaths?: string[];
     /** The skill's authorized capabilities, pinned. */
     scopeCapabilities?: string[];
+    /** The skill's explicit prohibitions, pinned when a deny decided the hold (RFC-0029). */
+    scopeDeny?: { tools?: string[]; paths?: string[]; capabilities?: string[] };
     /** The skill's declared spend envelope, pinned when a purchase was checked (#139). */
     scopeSpend?: { max_spend?: number; allowed_vendors?: string[]; currency?: string };
     /** The purchase the action performed, pinned when one was checked (#139). */
@@ -121,6 +149,12 @@ function spendDeclared(spend: ActionScope["spend"]): spend is NonNullable<Action
     isNonEmpty(spend.allowed_vendors) ||
     typeof spend.currency === "string"
   );
+}
+
+/** A deny scope prohibits something when at least one of its dimensions is non-empty. */
+function denyDeclared(deny: DenyScope | undefined): deny is DenyScope {
+  if (!deny || typeof deny !== "object") return false;
+  return isNonEmpty(deny.tools) || isNonEmpty(deny.paths) || isNonEmpty(deny.capabilities);
 }
 
 /** A scope is parseable when it declares at least one dimension. */
@@ -180,6 +214,49 @@ function targetInPrefixes(target: string, prefixes: string[]): boolean {
 }
 
 /**
+ * Does `scope.deny` prohibit `token` on `dimension`? (RFC-0029 / KCP 0.31, SPEC
+ * §4.3a.) The fail-closed override the conformance gate consults BEFORE the
+ * allowlist: a token present in the relevant `deny` list is denied even when the
+ * allowlist grants it. `tools` and `capabilities` are exact-string matches;
+ * `paths` reuse the same path-glob semantics the allowlist uses (`targetInPrefixes`)
+ * so a deny glob carves exactly the shape an allow glob grants. An absent or empty
+ * deny list denies nothing. Exported so a runtime enforcer and the gate share one
+ * adjudication rule — mirrors the spec validator's `deniesToken`.
+ */
+export function deniesToken(
+  scope: ActionScope | undefined,
+  dimension: "tools" | "paths" | "capabilities",
+  token: string,
+): boolean {
+  const list = scope?.deny?.[dimension];
+  if (!isNonEmpty(list)) return false;
+  if (dimension === "paths") return targetInPrefixes(token, list);
+  return list.includes(token);
+}
+
+/**
+ * Build the fail-closed verdict for a token an `action_scope.deny` prohibits. The
+ * reason cites the exact deny list that fired and the violating token is pinned
+ * as `evidence.target`, so the signed decision trace records which prohibition
+ * held the action.
+ */
+function deniedVerdict(
+  noun: "tool" | "target" | "capability",
+  dim: "tools" | "paths" | "capabilities",
+  token: string,
+  scope: ActionScope,
+  pins: NonNullable<ConformanceVerdict["evidence"]>,
+): ConformanceVerdict {
+  const list = scope.deny?.[dim] ?? [];
+  return {
+    gate: "conformance",
+    passed: false,
+    reason: `${noun} "${token}" is denied by the skill's action_scope.deny.${dim} [${list.join(", ")}] — deny overrides allow, fail-closed`,
+    evidence: { ...pins, target: token },
+  };
+}
+
+/**
  * Adjudicate one observed action against an authorized skill's action scope.
  *
  * Pure and deterministic — no I/O, no LLM. Each declared dimension of the scope
@@ -199,6 +276,7 @@ export function checkConformance(action: ObservedAction, scope: ActionScope): Co
     scopeTools: scope?.tools,
     scopePaths: scope?.paths,
     scopeCapabilities: scope?.capabilities,
+    ...(denyDeclared(scope?.deny) ? { scopeDeny: scope!.deny } : {}),
     ...(spendDeclared(scope?.spend) ? { scopeSpend: scope!.spend } : {}),
     ...(action.purchase ? { purchase: action.purchase } : {}),
   };
@@ -223,6 +301,27 @@ export function checkConformance(action: ObservedAction, scope: ActionScope): Co
         reason: `action_scope.${dim} is malformed (must be an array of non-empty strings) — fail-closed; action "${action.tool}" is held for review`,
         evidence: { ...pins },
       };
+    }
+  }
+
+  // Deny-first (RFC-0029 / KCP 0.31, §4.3a): the explicit negative scope
+  // OVERRIDES the allowlist, fail-closed. A tool/path/capability present in
+  // `deny` is refused even when the allowlist grants it, so it is adjudicated
+  // BEFORE any allow check — deny-overrides, deny-first. Path denies reuse the
+  // allowlist's glob semantics, so a deny carves a prohibited hole inside an
+  // allowed region. The verdict names the deny that fired and pins it in
+  // `evidence.scopeDeny`, so the signed decision trace records the prohibition.
+  if (deniesToken(scope, "tools", action.tool)) {
+    return deniedVerdict("tool", "tools", action.tool, scope, pins);
+  }
+  for (const target of [...(action.paths ?? []), ...(action.urls ?? [])]) {
+    if (deniesToken(scope, "paths", target)) {
+      return deniedVerdict("target", "paths", target, scope, pins);
+    }
+  }
+  for (const cap of action.capabilities ?? []) {
+    if (deniesToken(scope, "capabilities", cap)) {
+      return deniedVerdict("capability", "capabilities", cap, scope, pins);
     }
   }
 

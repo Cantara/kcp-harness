@@ -106,9 +106,11 @@ export {
 
 export {
   checkConformance,
+  deniesToken,
   type ConformanceVerdict,
   type ObservedAction,
   type ActionScope,
+  type DenyScope,
 } from "./conformance.js";
 
 export {

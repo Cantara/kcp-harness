@@ -62,6 +62,22 @@ units:
         allowed_vendors: [acme-supplies, globex]
         currency: USD
 
+  - id: guarded-docs-skill
+    path: skills/guarded-docs.md
+    kind: skill
+    intent: "Read deploy documentation but never the secrets area"
+    scope: module
+    audience: [agent]
+    triggers: [deploy, docs, guarded, runbook, read]
+    load_eligible: true
+    action_scope:
+      # Allow a broad region, then carve a prohibited hole with deny (RFC-0029).
+      tools: [Read, Grep]
+      paths: [docs/, skills/]
+      deny:
+        paths: [docs/secrets/**]
+        tools: [Grep]
+
   - id: rotate-secrets-skill
     path: skills/rotate-secrets.md
     kind: skill
