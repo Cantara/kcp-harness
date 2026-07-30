@@ -180,3 +180,74 @@ function loadKeyMaterialSafe(entry: string): string | undefined {
     return undefined;
   }
 }
+
+// -- Generic evidence signatures ---------------------------------------------
+//
+// The same ed25519 signing path as signResolution, generalized over an
+// arbitrary canonical string so the decision trace and the export bundle can
+// reuse this one key mechanism instead of minting a new one. The caller owns
+// canonicalization (canonical.ts) and decides what the signature commits to.
+
+/** A detached ed25519 signature over an arbitrary canonical evidence string. */
+export interface EvidenceSignature {
+  /** Signature scheme — always ed25519. */
+  algorithm: "ed25519";
+  /** base64 detached signature bytes over the canonical evidence. */
+  value: string;
+  /** Signer public key (PEM SPKI, base64/hex DER, or raw 32-byte). */
+  publicKey: string;
+  /** Optional key identifier, recorded for audit/rotation. */
+  keyId?: string;
+}
+
+/**
+ * Sign a canonical evidence string with a PKCS8 PEM ed25519 private key: derives
+ * the matching SPKI public key, signs, and returns the detached-signature
+ * envelope. Mirrors signResolution / signPurchaseReceipt exactly — the same
+ * key, the same primitives.
+ */
+export async function signEvidence(
+  privatePem: string,
+  canonical: string,
+  keyId?: string,
+): Promise<EvidenceSignature> {
+  const priv = createPrivateKey(privatePem);
+  const publicKeyPem = createPublicKey(priv).export({ type: "spki", format: "pem" }).toString();
+  const pkcs8Der = priv.export({ type: "pkcs8", format: "der" });
+  const key = await webcrypto.subtle.importKey("pkcs8", pkcs8Der, { name: "Ed25519" }, false, ["sign"]);
+  const value = await signPayload(key, canonical);
+  return { algorithm: "ed25519", value, publicKey: publicKeyPem, ...(keyId ? { keyId } : {}) };
+}
+
+/**
+ * Verify a detached ed25519 signature over a canonical evidence string.
+ * Fail-closed: returns false for any missing/malformed input rather than
+ * throwing. When `trustedKeys` is non-empty the signature must verify against
+ * one of the pinned keys (binds it to an identity); otherwise the envelope's
+ * embedded public key is used (integrity, self-attesting for identity).
+ */
+export async function verifyEvidence(
+  canonical: string,
+  signature: EvidenceSignature | undefined,
+  trustedKeys?: string[],
+): Promise<boolean> {
+  if (!signature || signature.algorithm !== "ed25519") return false;
+  const sigBytes = decodeBytes(signature.value);
+  if (!sigBytes || sigBytes.length !== 64) return false;
+  const message = new TextEncoder().encode(canonical);
+
+  const candidates =
+    trustedKeys && trustedKeys.length > 0
+      ? trustedKeys.map(loadKeyMaterialSafe).filter((k): k is string => k !== undefined)
+      : [signature.publicKey];
+
+  for (const material of candidates) {
+    try {
+      const key = await importPublicKey(material);
+      if (await webcrypto.subtle.verify("Ed25519", key, sigBytes, message)) return true;
+    } catch {
+      // A key we cannot import or that does not verify never grants trust.
+    }
+  }
+  return false;
+}

@@ -43,10 +43,13 @@ export {
   signResolution,
   signPayload,
   verifyResolutionSignature,
+  signEvidence,
+  verifyEvidence,
   importPublicKey,
   importPrivateKey,
   type ResolutionSignature,
   type ResolutionSignaturePayload,
+  type EvidenceSignature,
 } from "./resolution-signature.js";
 
 export {
@@ -79,10 +82,27 @@ export {
   buildConfidenceEvent,
   buildConformanceEvent,
   buildSkillEvent,
+  verifyAuditChain,
+  hashAuditEntry,
+  GENESIS_HASH,
   type AuditWriter,
   type AuditEvent,
   type AuditEventType,
+  type ChainVerification,
 } from "./audit.js";
+
+export { canonicalJSON, sha256Hex } from "./canonical.js";
+
+export {
+  toTraceEvent,
+  emitTrace,
+  canonicalTraceEvent,
+  signTraceEvent,
+  verifyTraceEvent,
+  type TraceEvent,
+  type TraceEventUnit,
+  type TraceContext,
+} from "./trace-emit.js";
 
 export {
   checkConformance,
@@ -180,6 +200,7 @@ export {
   exportEvidence,
   type ExportOptions,
   type ExportResult,
+  type BundleSeal,
 } from "./export.js";
 
 export {
