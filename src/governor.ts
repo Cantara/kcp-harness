@@ -22,6 +22,9 @@
 import {
   planTree,
   plans,
+  plan as planManifest,
+  parseManifest,
+  verifyManifestText,
   loadPlannedUnits,
   loadManifest,
   trace as traceDecision,
@@ -30,6 +33,7 @@ import {
   type PlanOptions,
   type FollowOptions,
   type SignatureResult,
+  type Manifest,
 } from "kcp-agent";
 import type { GateVerdict } from "kcp-agent";
 import { readFileSync } from "node:fs";
@@ -53,6 +57,23 @@ import {
 export interface ApprovalContext {
   provider: ApprovalProvider;
   rules: ApprovalRule[];
+}
+
+/**
+ * A manifest supplied to the governor in-memory, so it can govern without
+ * reading `node:fs` — for browser, sidecar, remote, and in-process hosts where
+ * the manifest is already resolved. Fully additive: when a caller passes none,
+ * the governor loads from `domain.manifest` exactly as before.
+ *
+ * Two shapes: an already-parsed `Manifest` model, or the raw YAML `text`
+ * (parsed here, with the original signable bytes still available for signature
+ * verification when `source` locates any detached key/signature).
+ */
+export type InMemoryManifest = Manifest | { text: string; source?: string };
+
+/** A parsed Manifest carries a `units` array; the text form does not. */
+function isParsedManifest(m: InMemoryManifest): m is Manifest {
+  return Array.isArray((m as Manifest).units);
 }
 
 /** The governor's decision for a tool call. */
@@ -101,6 +122,7 @@ export async function govern(
   session: SessionState,
   policy: GovernancePolicy,
   approvals?: ApprovalContext,
+  manifestSource?: InMemoryManifest,
 ): Promise<GovernanceDecision> {
   // KCP tools pass through — they ARE the governance layer
   if (toolName.startsWith("kcp_")) {
@@ -154,10 +176,11 @@ export async function govern(
     }
   }
 
-  // Mode 2: auto-plan — create a governance plan on the fly
-  if (target && domain.manifest) {
+  // Mode 2: auto-plan — create a governance plan on the fly. An in-memory
+  // manifest is a first-class source alongside domain.manifest (path/URL).
+  if (target && (domain.manifest || manifestSource)) {
     try {
-      const autoPlan = await autoGovern(target, domain, session, policy);
+      const autoPlan = await autoGovern(target, domain, session, policy, manifestSource);
       return autoPlan;
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -284,38 +307,41 @@ async function autoGovern(
   domain: GovernedDomain,
   session: SessionState,
   policy: GovernancePolicy,
+  manifestSource?: InMemoryManifest,
 ): Promise<GovernanceDecision> {
   const followOptions = buildFollowOptions(policy, session);
 
   // Use the target path as the task — the planner will score units
   // against this and select the most relevant ones.
   const task = `access ${target}`;
-  const tree = await planTree(domain.manifest, task, followOptions);
+  // Resolve the plan from whichever source the caller supplied: a pre-parsed /
+  // in-memory manifest (no fs) or the domain's manifest path/URL (fs/network).
+  const resolved = manifestSource
+    ? await planFromMemory(manifestSource, task, followOptions)
+    : await planFromLocation(domain.manifest, task, followOptions);
 
-  if (tree.error) {
+  if (resolved.error) {
     return {
       approved: false,
       mode: "blocked",
-      reason: `manifest error: ${tree.error}`,
-      signature: tree.signature,
+      reason: `manifest error: ${resolved.error}`,
+      signature: resolved.signature,
     };
   }
 
   // Signature enforcement: if required, block on non-verified signatures
-  if (policy.signature_required && tree.signature?.status !== "verified") {
-    const status = tree.signature?.status ?? "unsigned";
-    const detail = tree.signature?.detail ?? "no signing block in manifest";
+  if (policy.signature_required && resolved.signature?.status !== "verified") {
+    const status = resolved.signature?.status ?? "unsigned";
+    const detail = resolved.signature?.detail ?? "no signing block in manifest";
     return {
       approved: false,
       mode: "blocked",
       reason: `manifest signature ${status}: ${detail}`,
-      signature: tree.signature,
+      signature: resolved.signature,
     };
   }
 
-  // Extract the flat plan list
-  const allPlans = Array.from(plans(tree));
-  const rootPlan = allPlans[0];
+  const rootPlan = resolved.rootPlan;
 
   if (!rootPlan) {
     return {
@@ -351,7 +377,7 @@ async function autoGovern(
           mode: "auto-plan",
           plan: rootPlan,
           budgetSpend,
-          signature: tree.signature,
+          signature: resolved.signature,
           reason: `auto-plan blocked: budget ceiling exceeded — ${budgetSpend.reason}`,
         };
       }
@@ -365,7 +391,7 @@ async function autoGovern(
       mode: "auto-plan",
       plan: rootPlan,
       budgetSpend,
-      signature: tree.signature,
+      signature: resolved.signature,
       reason: `auto-plan approved: unit "${matchingUnit.id}" (score ${matchingUnit.score}) covers ${target}`,
     };
   }
@@ -380,7 +406,7 @@ async function autoGovern(
       approved: false,
       mode: "auto-plan",
       plan: rootPlan,
-      signature: tree.signature,
+      signature: resolved.signature,
       reason: `auto-plan blocked: unit "${ineligibleUnit.id}" covers ${target} but is not load-eligible (${ineligibleUnit.reasons.filter(r => r.startsWith("unaffordable") || r.startsWith("needs")).join("; ") || "gate restriction"})`,
     };
   }
@@ -398,9 +424,86 @@ async function autoGovern(
     approved: false,
     mode: "auto-plan",
     plan: rootPlan,
-    signature: tree.signature,
+    signature: resolved.signature,
     reason: `auto-plan blocked: ${skipReason}`,
   };
+}
+
+/** The root plan of an auto-govern resolution — from disk/network or memory. */
+interface ResolvedPlan {
+  rootPlan?: AgentPlan;
+  signature?: SignatureResult;
+  /** Fetch/parse/signature failure — fail-closed, same as planTree's node.error. */
+  error?: string;
+}
+
+/** Resolve the root plan from a manifest path/URL — the original fs/network path. */
+async function planFromLocation(
+  location: string,
+  task: string,
+  followOptions: FollowOptions,
+): Promise<ResolvedPlan> {
+  const tree = await planTree(location, task, followOptions);
+  return {
+    rootPlan: Array.from(plans(tree))[0],
+    signature: tree.signature,
+    error: tree.error,
+  };
+}
+
+/**
+ * Resolve the root plan from an in-memory manifest — no `node:fs`. Mirrors the
+ * root-node handling in kcp-agent's planTree so the decision is identical to the
+ * fs path: parse (when given text), verify the signature against the signable
+ * bytes, then run the same pure planner. Fail-closed on parse/signature errors.
+ *
+ * A pre-parsed `Manifest` has no signable bytes to re-verify; when the policy
+ * requires a verified signature, that source is refused (unverifiable) rather
+ * than silently admitted — supply the raw `text` form to carry a signature.
+ */
+async function planFromMemory(
+  src: InMemoryManifest,
+  task: string,
+  followOptions: FollowOptions,
+): Promise<ResolvedPlan> {
+  let manifest: Manifest;
+  let text: string | undefined;
+  let source: string | undefined;
+
+  if (isParsedManifest(src)) {
+    manifest = src;
+    source = src.source;
+  } else {
+    text = src.text;
+    source = src.source;
+    try {
+      manifest = parseManifest(text, source);
+    } catch (e) {
+      return { error: `manifest parse error: ${e instanceof Error ? e.message : String(e)}` };
+    }
+  }
+
+  let signature: SignatureResult | undefined;
+  if (text !== undefined) {
+    signature = await verifyManifestText(text, manifest.signing, source, {
+      ...(followOptions.trustedKey ? { trustedKey: followOptions.trustedKey } : {}),
+      ...(followOptions.fetchGuard ? { fetchGuard: followOptions.fetchGuard } : {}),
+    });
+    if (signature.status === "invalid") {
+      return { signature, error: `signature invalid: ${signature.detail}` };
+    }
+    if (followOptions.requireSignature && signature.status !== "verified") {
+      return { signature, error: `signature required but ${signature.status}: ${signature.detail}` };
+    }
+  } else if (followOptions.requireSignature) {
+    // A pre-parsed manifest carries no bytes to verify — fail-closed.
+    signature = { status: "unverifiable", detail: "in-memory manifest supplied without signable text" };
+    return { signature, error: `signature required but unverifiable: ${signature.detail}` };
+  }
+
+  const rootPlan = planManifest(manifest, task, followOptions.planOptions);
+  rootPlan.signature = signature;
+  return { rootPlan, signature };
 }
 
 /** Build FollowOptions from governance policy and session state. */
@@ -497,28 +600,57 @@ function asSpendAmount(v: unknown): number | undefined {
   return Number.isNaN(n) ? undefined : n;
 }
 
+/** Recover the spend envelope from raw manifest YAML text (kcp-agent's parser drops it, #139). */
+function spendScopeFromText(
+  base: { tools?: string[]; paths?: string[]; capabilities?: string[] } | undefined,
+  rawText: string,
+  skillId: string,
+): SkillEligibility["actionScope"] {
+  const raw = yaml.load(rawText) as
+    | { units?: Array<Record<string, unknown>> }
+    | undefined;
+  const unit = raw?.units?.find((u) => u["id"] === skillId);
+  const scope = unit && typeof unit["action_scope"] === "object" ? (unit["action_scope"] as Record<string, unknown>) : undefined;
+  const spendRaw = scope && typeof scope["spend"] === "object" ? (scope["spend"] as Record<string, unknown>) : undefined;
+  if (!spendRaw) return base;
+
+  const spend: { max_spend?: number; allowed_vendors?: string[]; currency?: string } = {};
+  const maxSpend = asSpendAmount(spendRaw["max_spend"]);
+  if (maxSpend !== undefined) spend.max_spend = maxSpend;
+  if (Array.isArray(spendRaw["allowed_vendors"])) spend.allowed_vendors = (spendRaw["allowed_vendors"] as unknown[]).map(String);
+  if (typeof spendRaw["currency"] === "string") spend.currency = spendRaw["currency"] as string;
+
+  if (spend.max_spend === undefined && spend.allowed_vendors === undefined && spend.currency === undefined) return base;
+  return { ...(base ?? {}), spend };
+}
+
 function withSpendScope(
   base: { tools?: string[]; paths?: string[]; capabilities?: string[] } | undefined,
   manifestPath: string,
   skillId: string,
 ): SkillEligibility["actionScope"] {
   try {
-    const raw = yaml.load(readFileSync(manifestPath, "utf-8")) as
-      | { units?: Array<Record<string, unknown>> }
-      | undefined;
-    const unit = raw?.units?.find((u) => u["id"] === skillId);
-    const scope = unit && typeof unit["action_scope"] === "object" ? (unit["action_scope"] as Record<string, unknown>) : undefined;
-    const spendRaw = scope && typeof scope["spend"] === "object" ? (scope["spend"] as Record<string, unknown>) : undefined;
-    if (!spendRaw) return base;
+    return spendScopeFromText(base, readFileSync(manifestPath, "utf-8"), skillId);
+  } catch {
+    return base;
+  }
+}
 
-    const spend: { max_spend?: number; allowed_vendors?: string[]; currency?: string } = {};
-    const maxSpend = asSpendAmount(spendRaw["max_spend"]);
-    if (maxSpend !== undefined) spend.max_spend = maxSpend;
-    if (Array.isArray(spendRaw["allowed_vendors"])) spend.allowed_vendors = (spendRaw["allowed_vendors"] as unknown[]).map(String);
-    if (typeof spendRaw["currency"] === "string") spend.currency = spendRaw["currency"] as string;
-
-    if (spend.max_spend === undefined && spend.allowed_vendors === undefined && spend.currency === undefined) return base;
-    return { ...(base ?? {}), spend };
+/**
+ * Recover the spend envelope from an in-memory manifest source — no `node:fs`.
+ * The raw `text` form still carries the bytes the parser drops, so the spend
+ * allowlist survives; a pre-parsed `Manifest` has no bytes to re-read, so the
+ * base scope stands (identical to the remote-URL case withSpendScope already
+ * handles fail-safe). Best-effort: any parse failure yields the base scope.
+ */
+function withSpendScopeFromSource(
+  base: { tools?: string[]; paths?: string[]; capabilities?: string[] } | undefined,
+  source: InMemoryManifest,
+  skillId: string,
+): SkillEligibility["actionScope"] {
+  if (isParsedManifest(source)) return base;
+  try {
+    return spendScopeFromText(base, source.text, skillId);
   } catch {
     return base;
   }
@@ -540,21 +672,38 @@ export async function assessSkillEligibility(
   skillId: string | undefined,
   session: SessionState,
   policy: GovernancePolicy,
+  manifestSource?: InMemoryManifest,
 ): Promise<SkillEligibility> {
   if (!skillId) {
     return { eligible: false, reason: "skill invocation carries no skill id — blocked", gate: "skill_eligibility", skillId: "" };
   }
-  if (!domain.manifest) {
+  // A manifest can arrive as a path/URL (fs/network) or in-memory (browser,
+  // sidecar, in-process) — either satisfies the "has a manifest" precondition.
+  if (!domain.manifest && !manifestSource) {
     return { eligible: false, reason: "governed skill domain has no manifest — blocked", gate: "skill_eligibility", skillId };
   }
 
-  const manifest = await loadManifest(domain.manifest);
+  let manifest: Manifest;
+  if (manifestSource) {
+    try {
+      manifest = isParsedManifest(manifestSource)
+        ? manifestSource
+        : parseManifest(manifestSource.text, manifestSource.source);
+    } catch (e) {
+      return { eligible: false, reason: `manifest parse error: ${e instanceof Error ? e.message : String(e)}`, gate: "skill_eligibility", skillId };
+    }
+  } else {
+    manifest = await loadManifest(domain.manifest);
+  }
+  const manifestLabel = domain.manifest || manifest.source || "in-memory manifest";
   const unit = manifest.units.find((u) => u.id === skillId);
   if (!unit) {
-    return { eligible: false, reason: `no unit "${skillId}" in ${domain.manifest}`, gate: "skill_eligibility", skillId };
+    return { eligible: false, reason: `no unit "${skillId}" in ${manifestLabel}`, gate: "skill_eligibility", skillId };
   }
   // Merge back the spend envelope kcp-agent's parser drops (#139).
-  const actionScope = withSpendScope(unit.action_scope, domain.manifest, skillId);
+  const actionScope = manifestSource
+    ? withSpendScopeFromSource(unit.action_scope, manifestSource, skillId)
+    : withSpendScope(unit.action_scope, domain.manifest, skillId);
   // Governed procedures are kind: skill and, since KCP v0.29, kind: playbook (§4.3b).
   // A playbook is an ordered composition of units governed per step — a procedure by
   // every criterion that put skills behind this gate, and one that reaches `commit` by

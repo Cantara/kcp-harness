@@ -1,9 +1,12 @@
 import { describe, it, expect } from "vitest";
+import { join } from "node:path";
 import { govern } from "../src/governor.js";
 import { classify, type Classification } from "../src/classifier.js";
 import { createSession, addPlan } from "../src/session.js";
 import type { GovernancePolicy, GovernedDomain } from "../src/config.js";
-import type { AgentPlan, PlannedUnit } from "kcp-agent";
+import { loadManifest, loadManifestText, type AgentPlan, type PlannedUnit } from "kcp-agent";
+
+const FJORDWIRE = join(import.meta.dirname ?? ".", "fixtures", "fjordwire", "knowledge.yaml");
 
 const policy: GovernancePolicy = {
   fail_closed: true,
@@ -87,6 +90,62 @@ describe("governor", () => {
     // With empty manifest, auto-plan will fail → blocked
     expect(decision.approved).toBe(false);
     expect(decision.mode).toBe("blocked");
+  });
+
+  it("auto-plans from an in-memory (pre-parsed) manifest — no fs read — identical to the fs path", async () => {
+    // Baseline: govern via the on-disk manifest path (auto-plan reads node:fs).
+    const fsSession = createSession();
+    const fsDomain: GovernedDomain = { manifest: FJORDWIRE, paths: ["index.md"] };
+    const fsClass: Classification = {
+      governed: true,
+      domain: fsDomain,
+      target: "index.md",
+      reason: "governed path",
+    };
+    const fsDecision = await govern(fsClass, "Read", { file_path: "index.md" }, fsSession, policy);
+    expect(fsDecision.approved).toBe(true);
+    expect(fsDecision.mode).toBe("auto-plan");
+
+    // In-memory: the manifest is already parsed and handed to govern(); the
+    // domain.manifest path is intentionally bogus so ANY fs read of it fails.
+    // Only the in-memory source can produce a decision — and it must be identical.
+    const manifest = await loadManifest(FJORDWIRE);
+    const memSession = createSession();
+    const memDomain: GovernedDomain = { manifest: "/nonexistent/does-not-exist.yaml", paths: ["index.md"] };
+    const memClass: Classification = {
+      governed: true,
+      domain: memDomain,
+      target: "index.md",
+      reason: "governed path",
+    };
+    const memDecision = await govern(
+      memClass, "Read", { file_path: "index.md" }, memSession, policy, undefined,
+      manifest,
+    );
+
+    expect(memDecision.approved).toBe(fsDecision.approved);
+    expect(memDecision.mode).toBe(fsDecision.mode);
+    expect(memDecision.reason).toBe(fsDecision.reason);
+  });
+
+  it("auto-plans from in-memory manifest text — no fs read — identical to the fs path", async () => {
+    const fsSession = createSession();
+    const fsDomain: GovernedDomain = { manifest: FJORDWIRE, paths: ["index.md"] };
+    const fsClass: Classification = { governed: true, domain: fsDomain, target: "index.md", reason: "governed path" };
+    const fsDecision = await govern(fsClass, "Read", { file_path: "index.md" }, fsSession, policy);
+
+    const { text, source } = await loadManifestText(FJORDWIRE);
+    const memSession = createSession();
+    const memDomain: GovernedDomain = { manifest: "/nonexistent/does-not-exist.yaml", paths: ["index.md"] };
+    const memClass: Classification = { governed: true, domain: memDomain, target: "index.md", reason: "governed path" };
+    const memDecision = await govern(
+      memClass, "Read", { file_path: "index.md" }, memSession, policy, undefined,
+      { text, source },
+    );
+
+    expect(memDecision.approved).toBe(fsDecision.approved);
+    expect(memDecision.mode).toBe(fsDecision.mode);
+    expect(memDecision.reason).toBe(fsDecision.reason);
   });
 
   it("blocks when no target is extractable from governed call", async () => {
