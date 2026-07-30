@@ -207,3 +207,12 @@ export {
   DashboardServer,
   type DashboardOptions,
 } from "./dashboard/server.js";
+
+export {
+  GovernHttpServer,
+  adjudicate,
+  type GovernHttpOptions,
+  type GovernHttpRequest,
+  type GovernHttpResult,
+  type GovernHttpDomain,
+} from "./govern-http.js";
