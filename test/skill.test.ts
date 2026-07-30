@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { join } from "node:path";
+import { loadManifest, loadManifestText } from "kcp-agent";
 import { classify } from "../src/classifier.js";
 import { assessSkillEligibility } from "../src/governor.js";
 import { createSession } from "../src/session.js";
@@ -96,6 +97,51 @@ describe("assessSkillEligibility", () => {
     const session = createSession();
     const r = await assessSkillEligibility(skillDomain, undefined, session, policy);
     expect(r.eligible).toBe(false);
+  });
+});
+
+// -- In-memory manifest source (no node:fs read) ------------------------------
+
+describe("assessSkillEligibility — in-memory manifest source", () => {
+  // A domain with a bogus path so ANY fs read of the manifest would fail — only
+  // the in-memory source can produce a verdict, and it must match the fs path.
+  const memDomain: GovernedDomain = {
+    manifest: "/nonexistent/does-not-exist.yaml",
+    paths: ["skills/", "docs/"],
+    skills: ["Skill", "kcp_skill"],
+  };
+
+  it("admits an eligible skill from a pre-parsed manifest — identical to fs", async () => {
+    const fs = await assessSkillEligibility(skillDomain, "deploy-skill", createSession(), policy);
+    const manifest = await loadManifest(SKILL_MANIFEST);
+    const mem = await assessSkillEligibility(memDomain, "deploy-skill", createSession(), policy, manifest);
+
+    expect(mem.eligible).toBe(fs.eligible);
+    expect(mem.gate).toBe(fs.gate);
+    expect(mem.reason).toBe(fs.reason);
+    expect(mem.actionScope?.tools).toEqual(fs.actionScope?.tools);
+  });
+
+  it("admits an eligible skill from raw manifest text and recovers the spend envelope", async () => {
+    const fs = await assessSkillEligibility(skillDomain, "procurement-skill", createSession(), policy);
+    const { text, source } = await loadManifestText(SKILL_MANIFEST);
+    const mem = await assessSkillEligibility(memDomain, "procurement-skill", createSession(), policy, { text, source });
+
+    expect(mem.eligible).toBe(fs.eligible);
+    expect(mem.reason).toBe(fs.reason);
+    // The spend allowlist the parser drops is recovered from the raw bytes (#139).
+    expect(mem.actionScope?.spend).toEqual(fs.actionScope?.spend);
+    expect(mem.actionScope?.spend?.max_spend).toBe(500);
+  });
+
+  it("refuses a non-eligible skill from an in-memory manifest (fail-closed)", async () => {
+    const fs = await assessSkillEligibility(skillDomain, "rotate-secrets-skill", createSession(), policy);
+    const manifest = await loadManifest(SKILL_MANIFEST);
+    const mem = await assessSkillEligibility(memDomain, "rotate-secrets-skill", createSession(), policy, manifest);
+
+    expect(mem.eligible).toBe(false);
+    expect(mem.eligible).toBe(fs.eligible);
+    expect(mem.reason).toBe(fs.reason);
   });
 });
 
