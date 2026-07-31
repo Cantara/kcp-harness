@@ -14,7 +14,7 @@ import { tmpdir } from "node:os";
 import { generateKeyPairSync } from "node:crypto";
 import { checkConformance, deniesToken, type ActionScope, type ObservedAction } from "../src/conformance.js";
 import { HarnessProxy } from "../src/proxy.js";
-import { InMemoryAuditLog } from "../src/audit.js";
+import { InMemoryAuditLog, buildProhibitedAttemptEvent } from "../src/audit.js";
 import type { GovernancePolicy, GovernedDomain, HarnessConfig } from "../src/config.js";
 import { verifyPurchaseReceipt, type PurchaseReceiptPayload, type PurchaseReceiptSignature } from "../src/purchase-receipt.js";
 
@@ -144,6 +144,81 @@ describe("checkConformance — action_scope.deny (RFC-0029 / KCP 0.31)", () => {
     expect(deniesToken(scope, "paths", "schema/secrets/key.yaml")).toBe(true);
     expect(deniesToken(scope, "paths", "schema/keys.yaml")).toBe(false);
     expect(deniesToken(undefined, "tools", "shell")).toBe(false);
+  });
+});
+
+// -- Deny paths are PATTERNS, never exact strings (spec v0.32.1 errata, §4.3a).
+//    The spec's own reference validator and kcp-agent once adjudicated deny.paths
+//    with exact string equality, so `legal/hold/**` never fired against
+//    `legal/hold/2025/case.pdf` — the enforcement hole fixed as pathGlobMatches
+//    in knowledge-context-protocol PR #189. These tests pin the structural
+//    semantics here so this harness can never regress into that defect class. --
+
+describe("checkConformance — deny.paths match structurally, not by string equality (spec v0.32.1 errata)", () => {
+  it("fires a deny glob against a path it structurally covers — never exact equality", () => {
+    const scope = {
+      tools: ["Read"],
+      paths: ["legal/**"],
+      deny: { paths: ["legal/hold/**"] },
+    } as ActionScope;
+    // "legal/hold/**" !== "legal/hold/2025/case.pdf" as strings — the deny MUST
+    // still fire, refused finally with the skill named as the binding source.
+    const v = checkConformance({ tool: "Read", paths: ["legal/hold/2025/case.pdf"] }, scope);
+    expect(v.passed).toBe(false);
+    expect(v.reason).toMatch(/deny\.paths/);
+    expect(v.evidence?.target).toBe("legal/hold/2025/case.pdf");
+    expect(v.prohibited).toBeDefined();
+    expect(v.prohibited!.dimension).toBe("paths");
+    expect(v.prohibited!.token).toBe("legal/hold/2025/case.pdf");
+    expect(v.prohibited!.bindingSources).toEqual(["skill"]);
+    // The exported single-scope rule agrees, though no deny entry equals the token.
+    expect(deniesToken(scope, "paths", "legal/hold/2025/case.pdf")).toBe(true);
+  });
+
+  it("carves a deny hole out of an allowed region: allow schema/**, deny schema/secrets/**", () => {
+    const scope = {
+      paths: ["schema/**"],
+      deny: { paths: ["schema/secrets/**"] },
+    } as ActionScope;
+    // Inside the allowed region, outside the carve-out → allowed.
+    const allowed = checkConformance({ tool: "Read", paths: ["schema/api.json"] }, scope);
+    expect(allowed.passed).toBe(true);
+    expect(allowed.prohibited).toBeUndefined();
+    // Under the carve-out → refused finally, and the refusal raises a
+    // notify-only prohibited_attempt audit event, not a grantable hold.
+    const denied = checkConformance({ tool: "Read", paths: ["schema/secrets/key.pem"] }, scope);
+    expect(denied.passed).toBe(false);
+    expect(denied.prohibited!.token).toBe("schema/secrets/key.pem");
+    expect(denied.prohibited!.bindingSources).toEqual(["skill"]);
+    const event = buildProhibitedAttemptEvent("session-1", 1, "schema-skill", denied);
+    expect(event.type).toBe("prohibited_attempt");
+    expect(event.outcome).toBe("blocked");
+    expect(event.prohibited!.token).toBe("schema/secrets/key.pem");
+    expect(event.prohibited!.dimension).toBe("paths");
+  });
+
+  it("globs the deny side under a playbook context too (effective deny union, §4.3b)", () => {
+    const v = checkConformance(
+      { tool: "Read", paths: ["legal/hold/2025/case.pdf"] },
+      { tools: ["Read"], paths: ["legal/**"] },
+      { id: "retention-playbook", scope: { deny: { paths: ["legal/hold/**"] } } },
+    );
+    expect(v.passed).toBe(false);
+    expect(v.prohibited!.bindingSources).toEqual(["playbook"]);
+    expect(v.prohibited!.token).toBe("legal/hold/2025/case.pdf");
+  });
+
+  it("keeps tools and capabilities exact tokens — a glob spelling is not a tool wildcard", () => {
+    const scope = {
+      tools: ["git", "shell-run"],
+      capabilities: ["deploy"],
+      deny: { tools: ["shell*"], capabilities: ["net*"] },
+    } as ActionScope;
+    // "shell*" denies only the literal token "shell*", not "shell-run".
+    expect(checkConformance({ tool: "shell-run" }, scope).passed).toBe(true);
+    expect(deniesToken(scope, "tools", "shell-run")).toBe(false);
+    expect(deniesToken(scope, "tools", "shell*")).toBe(true);
+    expect(deniesToken(scope, "capabilities", "network")).toBe(false);
   });
 });
 
