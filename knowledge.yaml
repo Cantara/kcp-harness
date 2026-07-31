@@ -7,10 +7,10 @@
 # every unit path exists on disk, and runs a plan against it. harness.yaml
 # points its self-governance domain at this same manifest.
 
-kcp_version: "0.30"
+kcp_version: "0.32"
 project: kcp-harness
-version: 0.11.0
-updated: "2026-07-14"
+version: 0.15.0
+updated: "2026-07-31"
 language: en
 
 trust:

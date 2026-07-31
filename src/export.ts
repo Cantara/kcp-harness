@@ -583,6 +583,9 @@ function buildControlEvidence(
 }
 
 function shortDetail(e: AuditEvent): string {
+  if (e.prohibited) {
+    return `prohibited attempt: ${e.prohibited.dimension} "${e.prohibited.token}" held by ${e.prohibited.bindingSources.join(" and ")} deny — refused finally (RFC-0030)`;
+  }
   if (e.conformance) return conformanceDetail(e);
   if (e.skill) return `skill "${e.skill.id}" ${e.skill.eligible ? "eligible" : "ineligible"}: ${e.skill.reason}`;
   if (e.drift) return `drift in ${e.drift.manifest}`;

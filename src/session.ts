@@ -28,6 +28,22 @@ export interface ActiveSkill {
   scope: ActionScope;
 }
 
+/**
+ * The enacted governed playbook whose `action_scope.deny` blankets every
+ * subsequent governed action (RFC-0030 / KCP 0.32, §4.3b). Set when a
+ * `kind: playbook` unit passes the eligibility gate; the effective deny for a
+ * later action is then the union of this deny and the active skill's. The
+ * harness does not track step boundaries, so the blanket holds for the rest of
+ * the session (or until another playbook loads) — deliberately over-broad in
+ * the only direction union permits: a deny can refuse more, never less.
+ */
+export interface ActivePlaybook {
+  /** The enacted playbook unit's id — named as the binding source when its deny fires. */
+  id: string;
+  /** The playbook's declared action_scope; only its `deny` is normative (§4.3b). */
+  scope: ActionScope;
+}
+
 /** An approved plan — the set of units the agent is allowed to access. */
 export interface ApprovedPlan {
   /** The manifest this plan came from. */
@@ -63,6 +79,13 @@ export interface SessionState {
    * calls (#39). Set when a skill_loaded verdict fires; undefined until then.
    */
   activeSkill?: ActiveSkill;
+  /**
+   * The enacted governed playbook whose deny blankets every subsequent governed
+   * action (RFC-0030). Set when a kind: playbook unit passes the gate; undefined
+   * until then. Composes with activeSkill by union of denies, never replaced by
+   * a mere skill load — a step's skill runs under the playbook's prohibitions.
+   */
+  activePlaybook?: ActivePlaybook;
 }
 
 /** Create a fresh session state. */

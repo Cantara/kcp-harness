@@ -16,9 +16,9 @@ import { createInterface } from "node:readline";
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import type { HarnessConfig } from "./config.js";
-import { classify, extractTargets } from "./classifier.js";
+import { classify, extractTargets, type Classification } from "./classifier.js";
 import { govern, assessSkillEligibility, type GovernanceDecision, type ApprovalContext } from "./governor.js";
-import { checkConformance, type ObservedAction } from "./conformance.js";
+import { checkConformance, type ObservedAction, type PlaybookContext } from "./conformance.js";
 import { deriveCorrelation } from "./correlation.js";
 import { providerFromConfig, latestForCall, newRequest, parseDuration, type ApprovalProvider } from "./approval.js";
 import { assess } from "kcp-agent";
@@ -35,6 +35,7 @@ import {
   buildConformanceEvent,
   buildSkillEvent,
   buildPurchaseEvent,
+  buildProhibitedAttemptEvent,
   type AuditWriter,
   type AuditEvent,
 } from "./audit.js";
@@ -45,7 +46,7 @@ import { toTraceEvent, emitTrace, signTraceEvent } from "./trace-emit.js";
 import type { DecisionTrace } from "kcp-agent";
 import type { BudgetCeiling } from "./budget-ledger.js";
 
-const HARNESS_VERSION = "0.11.0";
+const HARNESS_VERSION = "0.15.0";
 const PROTOCOL_VERSION = "2025-06-18";
 
 /**
@@ -348,7 +349,7 @@ export class HarnessProxy {
       // before plan governance because a scope violation is decided by the
       // loaded skill alone — no plan lets an action roam outside its skill.
       if (classification.governed && !classification.skill && this.session.activeSkill) {
-        const held = await this.enforceConformance(id, toolName, args, correlationId);
+        const held = await this.enforceConformance(id, toolName, args, classification, seq, startTime, correlationId, parentId);
         if (held) return held;
       }
 
@@ -455,6 +456,20 @@ export class HarnessProxy {
           id: skillGate.skillId,
           scope: skillGate.actionScope ?? {},
         };
+
+        // RFC-0030 (§4.3b): an enacted kind: playbook is ALSO the session's
+        // playbook context — its action_scope.deny blankets every subsequent
+        // governed action, whichever skill a step loads next. A mere skill load
+        // leaves the context in place: a step's skill runs under the playbook's
+        // prohibitions, and the harness does not track step boundaries, so the
+        // blanket holds until another playbook is enacted. Over-broad only in
+        // the direction union permits — more refused, never less.
+        if (skillGate.kind === "playbook") {
+          this.session.activePlaybook = {
+            id: skillGate.skillId,
+            scope: skillGate.actionScope ?? {},
+          };
+        }
       }
 
       let result: unknown;
@@ -718,6 +733,14 @@ export class HarnessProxy {
    * action returns an error and never reaches govern or the downstream tool. A
    * named human's prior approval of the same (target, tool) overrides the hold.
    *
+   * An enacted playbook's `action_scope.deny` joins the adjudication as context
+   * (RFC-0030 / KCP 0.32, §4.3b): the effective deny is the union of the active
+   * skill's and the playbook's, and a deny-hit — from either source — is FINAL.
+   * It emits a notify-only prohibited_attempt event instead of opening a ticket,
+   * and the human-override path above does not apply: no approval resolution,
+   * prior or future, enacts a denied action. The only way past a deny is a new,
+   * reviewed, signed manifest version.
+   *
    * @returns an rpc error result when the action is held; `undefined` when it is
    * conformant (or a human has overridden the hold) and processing may continue.
    */
@@ -725,7 +748,11 @@ export class HarnessProxy {
     id: JsonRpcRequest["id"],
     toolName: string,
     args: Record<string, unknown>,
+    classification: Classification,
+    seq: number,
+    startTime: number,
     correlationId?: string,
+    parentId?: string,
   ): Promise<object | undefined> {
     const active = this.session.activeSkill;
     if (!active) return undefined;
@@ -733,7 +760,14 @@ export class HarnessProxy {
     const { paths, urls } = extractTargets(toolName, args);
     const purchase = detectPurchase(toolName, args);
     const action: ObservedAction = { tool: toolName, paths, urls, ...(purchase ? { purchase } : {}) };
-    const verdict = checkConformance(action, active.scope);
+    // The enacted playbook is the step's context — unless the playbook IS the
+    // active procedure, whose own scope already carries the deny (union with
+    // itself would only double-name one source).
+    const playbook: PlaybookContext | undefined =
+      this.session.activePlaybook && this.session.activePlaybook.id !== active.id
+        ? this.session.activePlaybook
+        : undefined;
+    const verdict = checkConformance(action, active.scope, playbook);
 
     if (verdict.passed) {
       this.audit.emit(
@@ -743,6 +777,40 @@ export class HarnessProxy {
         await this.recordPurchaseSettlement(purchase, correlationId);
       }
       return undefined;
+    }
+
+    // A deny-hit is refused FINALLY (RFC-0030): no ticket is opened, no prior
+    // approval overrides, and the escalation is a notify-only prohibited_attempt
+    // event — an auditable §17 signal, not a request for permission. The
+    // conformance_verdict still records the gate's adjudication, and the held
+    // call is audited as a blocked tool_call whose GovernanceDecision surfaces
+    // the binding source(s), so the signed evidence chain carries the refusal
+    // at every level a reviewer reads.
+    if (verdict.prohibited) {
+      this.audit.emit(
+        buildConformanceEvent(this.session.id, nextSequence(this.session), active.id, verdict, undefined, correlationId),
+      );
+      this.audit.emit(
+        buildProhibitedAttemptEvent(this.session.id, nextSequence(this.session), active.id, verdict, correlationId),
+      );
+      const decision: GovernanceDecision = {
+        approved: false,
+        mode: "blocked",
+        reason: verdict.reason,
+        prohibited: verdict.prohibited,
+      };
+      this.audit.emit(
+        buildEvent(
+          this.session.id, seq, toolName, args, classification, decision,
+          "blocked", Date.now() - startTime, undefined, correlationId, parentId,
+        ),
+      );
+      return rpcResult(id, {
+        content: [
+          { type: "text", text: `[kcp-harness] CONFORMANCE BLOCKED: ${verdict.reason}` },
+        ],
+        isError: true,
+      });
     }
 
     // Non-conformant — route to the approval machinery, then hold fail-closed.

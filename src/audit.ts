@@ -40,7 +40,8 @@ export type AuditEventType =
   | "skill_loaded"       // Skill/procedure gate: a governed skill passed skill_eligibility
   | "skill_skipped"      // Skill/procedure gate: a governed skill failed skill_eligibility (fail-closed)
   | "conformance_verdict" // Conformance gate: an action checked against the active skill's action_scope (#39)
-  | "purchase_settled";  // Purchase conformance: a governed buy cleared the spend gate and settled (#139)
+  | "purchase_settled"   // Purchase conformance: a governed buy cleared the spend gate and settled (#139)
+  | "prohibited_attempt"; // Deny finality: an action an action_scope.deny holds was attempted — notify-only, never a pending approval (RFC-0030 / KCP 0.32)
 
 /** A single audit event. */
 export interface AuditEvent {
@@ -162,6 +163,29 @@ export interface AuditEvent {
     target?: string;
     /** Ticket opened for a non-conformant action, when routing applied. */
     ticketId?: string;
+  };
+  /**
+   * A prohibited attempt (for prohibited_attempt events; RFC-0030 / KCP 0.32,
+   * §4.3b): an action an `action_scope.deny` holds was attempted and refused,
+   * FINALLY. This event is a §17 notification, not a request for permission —
+   * no ticket accompanies it, and no response to it enacts the refused action.
+   * It exists because repeated attempts to do forbidden things is a governance
+   * signal — misconfiguration, compromise, or probing — and that signal is only
+   * trustworthy if the answer at the gate is always no.
+   */
+  prohibited?: {
+    /** The active skill whose action was refused. */
+    skillId: string;
+    /** The enclosing playbook, when its deny contributed to the refusal. */
+    playbookId?: string;
+    /** The denied token — the tool, target, or capability that was refused. */
+    token: string;
+    /** The deny dimension the token matched on. */
+    dimension: "tools" | "paths" | "capabilities";
+    /** The deny source(s) that matched — the binding source(s), both when both match (§4.3b). */
+    bindingSources: Array<"skill" | "playbook">;
+    /** The gate's written reason — cites the exact deny list(s) that fired. */
+    reason: string;
   };
   /**
    * A settled governed purchase (for purchase_settled events; #139). Carries
@@ -530,6 +554,42 @@ export function buildConformanceEvent(
       tool: verdict.evidence?.tool,
       target: verdict.evidence?.target,
       ticketId,
+    },
+  };
+}
+
+/**
+ * Build a prohibited-attempt event (RFC-0030 / KCP 0.32, §4.3b): a deny-hit,
+ * refused finally. Distinct from a refusal-pending-approval by construction —
+ * this event carries no ticket id and there is no ticket to carry: the approval
+ * flow structurally refuses to open one for a deny-hit (see approval.ts). The
+ * verdict's `prohibited` field supplies the denied token, dimension, and binding
+ * source(s); the reason is the gate's written one, never reconstructed.
+ * Correlation-stamped and hash-chained like every other event.
+ */
+export function buildProhibitedAttemptEvent(
+  sessionId: string,
+  sequence: number,
+  skillId: string,
+  verdict: ConformanceVerdict,
+  correlationId?: string,
+): AuditEvent {
+  const p = verdict.prohibited;
+  return {
+    timestamp: new Date().toISOString(),
+    sessionId,
+    sequence,
+    ...(correlationId ? { correlationId } : {}),
+    type: "prohibited_attempt",
+    outcome: "blocked",
+    durationMs: 0,
+    prohibited: {
+      skillId,
+      ...(p?.playbookId ? { playbookId: p.playbookId } : {}),
+      token: p?.token ?? verdict.evidence?.target ?? "",
+      dimension: p?.dimension ?? "tools",
+      bindingSources: p?.bindingSources ?? [],
+      reason: verdict.reason,
     },
   };
 }

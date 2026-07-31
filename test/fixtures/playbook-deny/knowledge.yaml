@@ -1,0 +1,64 @@
+# kind: playbook prohibition fixture — KCP v0.32, §4.3b / RFC-0030.
+#
+# Local, no serving/federation block so the planner needs no network. One skill a
+# playbook composes, and a playbook carrying a blanket `action_scope.deny` that is
+# NORMATIVE for enactment: it holds every step, whichever skill runs. The skill's
+# own deny (archive/frozen/**) and the playbook's deny (legal/hold/**,
+# transfer_ownership, archive/frozen/**) compose by union — a token matching
+# either source is denied, and one matching both names both binding sources.
+kcp_version: "0.32"
+project: playbook-deny-fixture
+version: 1.0.0
+updated: "2026-07-31"
+language: en
+
+units:
+  - id: cleanup-skill
+    path: skills/cleanup.md
+    kind: skill
+    intent: "Delete expired records from the archive"
+    scope: module
+    audience: [agent]
+    triggers: [delete, cleanup, archive, records, expired]
+    load_eligible: true
+    action_scope:
+      # The allowlist deliberately grants legal/ and transfer_ownership — the
+      # playbook's deny must override an allow the skill itself would grant.
+      tools: [Read, Bash, transfer_ownership]
+      paths: [archive/, legal/, skills/]
+      deny:
+        paths: [archive/frozen/**]
+
+  # A deletion playbook that can never touch legal hold, whichever skill runs —
+  # the RFC-0030 motivating example. Its action_scope carries ONLY a deny: the
+  # rest of the envelope stays declarative, and the deny is enforced per step.
+  - id: gdpr-deletion-playbook
+    path: playbooks/gdpr-deletion.md
+    kind: playbook
+    intent: "Delete expired records end to end without touching legal hold"
+    scope: module
+    audience: [agent]
+    triggers: [delete, cleanup, gdpr, records, deletion, expired]
+    load_eligible: true
+    action_scope:
+      deny:
+        paths: [legal/hold/**, archive/frozen/**]
+        tools: [transfer_ownership]
+    steps:
+      - id: identify
+        uses: cleanup-skill
+        authority_level: observe
+        success_condition: "expired records enumerated"
+      - id: delete
+        uses: cleanup-skill
+        depends_on: [identify]
+        authority_level: commit
+
+  # Knowledge unit covering the allowed region, so a conformant step action also
+  # clears plan governance (the auto-plan gate needs a unit over the target).
+  - id: expired-records
+    path: archive/expired/2020.rec
+    intent: "Expired archive records eligible for deletion"
+    scope: module
+    audience: [agent]
+    triggers: [archive, expired, records, delete, cleanup]

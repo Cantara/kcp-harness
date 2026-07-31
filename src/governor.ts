@@ -39,6 +39,7 @@ import type { GateVerdict } from "kcp-agent";
 import { readFileSync } from "node:fs";
 import yaml from "js-yaml";
 import type { GovernancePolicy, GovernedDomain, ApprovalRule } from "./config.js";
+import type { ProhibitedAttempt } from "./conformance.js";
 import type { Classification } from "./classifier.js";
 import { matchesPrefix } from "./classifier.js";
 import type { SessionState, ApprovedPlan } from "./session.js";
@@ -102,6 +103,14 @@ export interface GovernanceDecision {
   submitted?: boolean;
   /** The named human's resolution, when mode is "human-approved". */
   resolution?: ApprovalResolution;
+  /**
+   * The deny-hit that decided this call, when an `action_scope.deny` held it
+   * (RFC-0030 / KCP 0.32, §4.3b): the denied token, dimension, and binding
+   * source(s) — the skill's deny, the enclosing playbook's, or both. A deny is
+   * never grantable: when this is set, `approved` is false, no pending ticket
+   * exists, and no approval resolution may enact the action.
+   */
+  prohibited?: ProhibitedAttempt;
 }
 
 /**
@@ -558,6 +567,13 @@ export interface SkillEligibility {
   gate: string;
   /** The skill unit id that was gated. */
   skillId: string;
+  /**
+   * The gated unit's declared kind, when the unit exists. The proxy needs it to
+   * tell a `kind: playbook` from a `kind: skill` at load time: an enacted
+   * playbook's `action_scope.deny` blankets every subsequent step (RFC-0030 /
+   * KCP 0.32, §4.3b), so the two kinds wire into session state differently.
+   */
+  kind?: string;
   /** The skill's declared action scope, when the unit declares one. */
   actionScope?: {
     tools?: string[];
@@ -738,7 +754,7 @@ export async function assessSkillEligibility(
   // the canonical plan, its trace reimplements the cascade for per-gate verdicts, and
   // this decides at the proxy boundary. kcp-agent#118 is what their drift costs.
   if (!GOVERNED_KINDS.has(unit.kind ?? "")) {
-    return { eligible: false, reason: `unit "${skillId}" is kind: ${unit.kind ?? "knowledge"} — not a governed procedure, not invoke-eligible`, gate: "skill_eligibility", skillId, actionScope };
+    return { eligible: false, reason: `unit "${skillId}" is kind: ${unit.kind ?? "knowledge"} — not a governed procedure, not invoke-eligible`, gate: "skill_eligibility", skillId, kind: unit.kind, actionScope };
   }
 
   // Trace the skill against its own intent so the relevance gate matches and
@@ -750,7 +766,7 @@ export async function assessSkillEligibility(
   const ut = dt.units.find((u) => u.id === skillId);
 
   if (!ut) {
-    return { eligible: false, reason: `skill "${skillId}" produced no trace verdict — blocked`, gate: "skill_eligibility", skillId, actionScope };
+    return { eligible: false, reason: `skill "${skillId}" produced no trace verdict — blocked`, gate: "skill_eligibility", skillId, kind: unit.kind, actionScope };
   }
 
   const skillGate: GateVerdict | undefined = ut.gates.find((g) => g.gate === "skill_eligibility");
@@ -772,6 +788,7 @@ export async function assessSkillEligibility(
     reason,
     gate: deciding?.gate ?? "skill_eligibility",
     skillId,
+    kind: unit.kind,
     actionScope,
   };
 }

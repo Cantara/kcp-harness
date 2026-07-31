@@ -385,6 +385,15 @@ describe("HarnessProxy — conformance gate", () => {
     expect(verdict!.conformance!.passed).toBe(false);
     expect(verdict!.conformance!.reason).toMatch(/deny\.paths/);
     expect(verdict!.conformance!.reason).toMatch(/deny overrides allow, fail-closed/);
+
+    // RFC-0030 amends RFC-0029's escalation: a deny-hit is final, for the
+    // skill-level deny too. No grantable ticket opens — a notify-only
+    // prohibited_attempt event is raised instead, naming the binding source.
+    expect(await proxy.getApprovalProvider()!.list()).toHaveLength(0);
+    expect(audit.events.some((e) => e.type === "approval_requested")).toBe(false);
+    const attempt = audit.events.find((e) => e.type === "prohibited_attempt");
+    expect(attempt).toBeDefined();
+    expect(attempt!.prohibited!.bindingSources).toEqual(["skill"]);
   });
 
   it("still allows an action elsewhere in the deny-guarded skill's allowed region", async () => {

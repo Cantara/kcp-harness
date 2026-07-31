@@ -82,6 +82,7 @@ export {
   buildConfidenceEvent,
   buildConformanceEvent,
   buildSkillEvent,
+  buildProhibitedAttemptEvent,
   verifyAuditChain,
   hashAuditEntry,
   GENESIS_HASH,
@@ -107,10 +108,13 @@ export {
 export {
   checkConformance,
   deniesToken,
+  effectiveDeniesToken,
   type ConformanceVerdict,
   type ObservedAction,
   type ActionScope,
   type DenyScope,
+  type PlaybookContext,
+  type ProhibitedAttempt,
 } from "./conformance.js";
 
 export {
