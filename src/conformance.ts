@@ -130,11 +130,55 @@ export interface ConformanceVerdict {
     scopeCapabilities?: string[];
     /** The skill's explicit prohibitions, pinned when a deny decided the hold (RFC-0029). */
     scopeDeny?: { tools?: string[]; paths?: string[]; capabilities?: string[] };
+    /** The enclosing playbook's blanket prohibitions, pinned when one was in force (RFC-0030). */
+    playbookDeny?: { tools?: string[]; paths?: string[]; capabilities?: string[] };
+    /** The enclosing playbook's unit id, pinned when one was in force (RFC-0030). */
+    playbookId?: string;
     /** The skill's declared spend envelope, pinned when a purchase was checked (#139). */
     scopeSpend?: { max_spend?: number; allowed_vendors?: string[]; currency?: string };
     /** The purchase the action performed, pinned when one was checked (#139). */
     purchase?: { vendor: string; amount: number; currency: string };
   };
+  /**
+   * Present when an `action_scope.deny` held the action (RFC-0030 / KCP 0.32,
+   * SPEC §4.3b). A deny-hit is refused FINALLY: it raises a notify-only
+   * prohibited-attempt event, never a pending approval ticket, and no grant,
+   * approval, or escalation outcome may enact it. The only way past a deny is a
+   * new, reviewed, signed manifest version that no longer declares it. Absent on
+   * every other hold — an ordinary out-of-scope action stays routable to a human.
+   */
+  prohibited?: ProhibitedAttempt;
+}
+
+/**
+ * The deny-hit a prohibited action produces (RFC-0030 / KCP 0.32, §4.3b): the
+ * denied token, the dimension it matched on, and the binding source(s) — the
+ * deny list(s) that fired, named the same way the grant_ceiling minimum's
+ * binding source is (§3.13). Both are named when both match.
+ */
+export interface ProhibitedAttempt {
+  /** The deny dimension the token matched on. */
+  dimension: "tools" | "paths" | "capabilities";
+  /** The denied token — the tool, target, or capability that was refused. */
+  token: string;
+  /** The deny source(s) that matched: the skill's own deny, the playbook's, or both. */
+  bindingSources: Array<"skill" | "playbook">;
+  /** The enclosing playbook's unit id, when its deny was in force. */
+  playbookId?: string;
+}
+
+/**
+ * The enclosing playbook's contribution to a step's adjudication (RFC-0030 /
+ * KCP 0.32, §4.3b). Only its `deny` is normative — the rest of a playbook's
+ * `action_scope` envelope stays a declaration for review, and passing the whole
+ * scope here MUST NOT widen the step: checkConformance reads nothing but the
+ * deny from it.
+ */
+export interface PlaybookContext {
+  /** The playbook unit's id — named as the binding source when its deny fires. */
+  id: string;
+  /** The playbook's declared action_scope; only `deny` is consulted. */
+  scope?: ActionScope;
 }
 
 function isNonEmpty(a: string[] | undefined): a is string[] {
@@ -235,24 +279,79 @@ export function deniesToken(
 }
 
 /**
+ * Does ANY of `scopes` deny `token` on `dimension`? (RFC-0030 / KCP 0.32, SPEC
+ * §4.3b.) The effective denylist for a playbook step is the UNION per dimension
+ * of the playbook's `deny` and the used skill's `deny` — a token matching either
+ * source is denied. Union is the only sound composition: adding a deny source can
+ * only refuse more, never less, so composition can never become a bypass. Absent
+ * scopes are dropped from the union rather than failing on. Exported so a
+ * runtime enforcer and the gate share one rule — mirrors the spec validator's
+ * `effectiveDeniesToken`.
+ */
+export function effectiveDeniesToken(
+  scopes: ReadonlyArray<ActionScope | undefined>,
+  dimension: "tools" | "paths" | "capabilities",
+  token: string,
+): boolean {
+  return scopes.some((scope) => deniesToken(scope, dimension, token));
+}
+
+/**
+ * The deny source(s) that prohibit `token` on `dimension` — the binding
+ * source(s) named in the verdict and the audit (§4.3b). Empty when neither the
+ * skill's nor the enclosing playbook's deny matches.
+ */
+function bindingSources(
+  scope: ActionScope | undefined,
+  playbook: PlaybookContext | undefined,
+  dimension: "tools" | "paths" | "capabilities",
+  token: string,
+): Array<"skill" | "playbook"> {
+  const sources: Array<"skill" | "playbook"> = [];
+  if (deniesToken(scope, dimension, token)) sources.push("skill");
+  if (playbook && deniesToken(playbook.scope, dimension, token)) sources.push("playbook");
+  return sources;
+}
+
+/**
  * Build the fail-closed verdict for a token an `action_scope.deny` prohibits. The
- * reason cites the exact deny list that fired and the violating token is pinned
+ * reason cites the exact deny list(s) that fired — the binding source(s), both
+ * named when both match (RFC-0030 §4.3b) — and the violating token is pinned
  * as `evidence.target`, so the signed decision trace records which prohibition
- * held the action.
+ * held the action. The verdict carries `prohibited`: a deny-hit is final, never
+ * a grantable hold.
  */
 function deniedVerdict(
   noun: "tool" | "target" | "capability",
   dim: "tools" | "paths" | "capabilities",
   token: string,
   scope: ActionScope,
+  playbook: PlaybookContext | undefined,
+  sources: Array<"skill" | "playbook">,
   pins: NonNullable<ConformanceVerdict["evidence"]>,
 ): ConformanceVerdict {
-  const list = scope.deny?.[dim] ?? [];
+  const skillList = scope.deny?.[dim] ?? [];
+  const playbookList = playbook?.scope?.deny?.[dim] ?? [];
+  const cites: string[] = [];
+  if (sources.includes("skill")) {
+    cites.push(`the skill's action_scope.deny.${dim} [${skillList.join(", ")}]`);
+  }
+  if (sources.includes("playbook") && playbook) {
+    cites.push(`playbook "${playbook.id}"'s action_scope.deny.${dim} [${playbookList.join(", ")}]`);
+  }
   return {
     gate: "conformance",
     passed: false,
-    reason: `${noun} "${token}" is denied by the skill's action_scope.deny.${dim} [${list.join(", ")}] — deny overrides allow, fail-closed`,
+    reason:
+      `${noun} "${token}" is denied by ${cites.join(" and by ")} — ` +
+      `deny overrides allow, fail-closed; a deny is never grantable (RFC-0030)`,
     evidence: { ...pins, target: token },
+    prohibited: {
+      dimension: dim,
+      token,
+      bindingSources: sources,
+      ...(sources.includes("playbook") && playbook ? { playbookId: playbook.id } : {}),
+    },
   };
 }
 
@@ -267,19 +366,63 @@ function deniedVerdict(
  * does not constrain that facet — but a scope that declares *nothing* (absent or
  * unparseable) authorizes nothing and every action is held (fail-closed).
  *
+ * A step of a `kind: playbook` unit is adjudicated with the playbook as context
+ * (RFC-0030 / KCP 0.32, §4.3b): the effective denylist is the UNION per
+ * dimension of the playbook's `deny` and this scope's `deny` — a token matching
+ * either source is denied, and the matching source(s) are named as the binding
+ * source. Only the playbook's `deny` is read; its allow envelope stays
+ * declarative and can never widen the step.
+ *
  * @returns `passed:true` when the action is wholly within scope; otherwise
  * `passed:false` with a reason naming the specific violating target.
  */
-export function checkConformance(action: ObservedAction, scope: ActionScope): ConformanceVerdict {
+export function checkConformance(
+  action: ObservedAction,
+  scope: ActionScope,
+  playbook?: PlaybookContext,
+): ConformanceVerdict {
   const pins = {
     tool: action.tool,
     scopeTools: scope?.tools,
     scopePaths: scope?.paths,
     scopeCapabilities: scope?.capabilities,
     ...(denyDeclared(scope?.deny) ? { scopeDeny: scope!.deny } : {}),
+    ...(playbook && denyDeclared(playbook.scope?.deny)
+      ? { playbookDeny: playbook.scope!.deny, playbookId: playbook.id }
+      : {}),
     ...(spendDeclared(scope?.spend) ? { scopeSpend: scope!.spend } : {}),
     ...(action.purchase ? { purchase: action.purchase } : {}),
   };
+
+  // Deny-first (RFC-0029 §4.3a; RFC-0030 §4.3b): the effective deny — the union
+  // of this scope's `deny` and the enclosing playbook's — OVERRIDES everything,
+  // fail-closed, and is adjudicated BEFORE every other branch, including the
+  // no-scope fail-close below. The order is load-bearing: a no-scope hold is
+  // routable to a human, a deny-hit is final — were the no-scope branch to win,
+  // an action a playbook prohibits over a scope-less step would surface as a
+  // grantable hold, and an approval could enact a denied action. Path denies
+  // reuse the allowlist's glob semantics, so a deny carves a prohibited hole
+  // inside an allowed region. The verdict names the binding source(s) and pins
+  // the deny list(s) in evidence, so the signed decision trace records the
+  // prohibition.
+  {
+    const toolSources = bindingSources(scope, playbook, "tools", action.tool);
+    if (toolSources.length > 0) {
+      return deniedVerdict("tool", "tools", action.tool, scope, playbook, toolSources, pins);
+    }
+    for (const target of [...(action.paths ?? []), ...(action.urls ?? [])]) {
+      const sources = bindingSources(scope, playbook, "paths", target);
+      if (sources.length > 0) {
+        return deniedVerdict("target", "paths", target, scope, playbook, sources, pins);
+      }
+    }
+    for (const cap of action.capabilities ?? []) {
+      const sources = bindingSources(scope, playbook, "capabilities", cap);
+      if (sources.length > 0) {
+        return deniedVerdict("capability", "capabilities", cap, scope, playbook, sources, pins);
+      }
+    }
+  }
 
   // Fail-closed: an absent or unparseable scope authorizes nothing.
   if (!hasScope(scope)) {
@@ -301,27 +444,6 @@ export function checkConformance(action: ObservedAction, scope: ActionScope): Co
         reason: `action_scope.${dim} is malformed (must be an array of non-empty strings) — fail-closed; action "${action.tool}" is held for review`,
         evidence: { ...pins },
       };
-    }
-  }
-
-  // Deny-first (RFC-0029 / KCP 0.31, §4.3a): the explicit negative scope
-  // OVERRIDES the allowlist, fail-closed. A tool/path/capability present in
-  // `deny` is refused even when the allowlist grants it, so it is adjudicated
-  // BEFORE any allow check — deny-overrides, deny-first. Path denies reuse the
-  // allowlist's glob semantics, so a deny carves a prohibited hole inside an
-  // allowed region. The verdict names the deny that fired and pins it in
-  // `evidence.scopeDeny`, so the signed decision trace records the prohibition.
-  if (deniesToken(scope, "tools", action.tool)) {
-    return deniedVerdict("tool", "tools", action.tool, scope, pins);
-  }
-  for (const target of [...(action.paths ?? []), ...(action.urls ?? [])]) {
-    if (deniesToken(scope, "paths", target)) {
-      return deniedVerdict("target", "paths", target, scope, pins);
-    }
-  }
-  for (const cap of action.capabilities ?? []) {
-    if (deniesToken(scope, "capabilities", cap)) {
-      return deniedVerdict("capability", "capabilities", cap, scope, pins);
     }
   }
 

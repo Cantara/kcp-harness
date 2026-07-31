@@ -136,10 +136,31 @@ export function providerFromConfig(config: ApprovalsConfig): ApprovalProvider {
   return new FileApprovalProvider(config.dir ?? DEFAULT_APPROVALS_DIR, sig);
 }
 
+/**
+ * A deny is never grantable (RFC-0030 / KCP 0.32, §4.3b). An approval ticket is
+ * a request for permission, and a deny-hit is not a question: the action is
+ * refused finally and the escalation raised is a notify-only prohibited-attempt
+ * event. This guard makes the refusal structural — enforced at newRequest AND at
+ * every provider's submit(), so no channel can store a grantable ticket for a
+ * prohibited action, whatever built the request. The only way past a deny is a
+ * new, reviewed, signed manifest version that no longer declares it.
+ */
+function assertGrantable(req: Omit<ApprovalRequest, "id" | "requestedAt"> | ApprovalRequest): void {
+  if (req.evidence?.conformance?.prohibited) {
+    const p = req.evidence.conformance.prohibited;
+    throw new Error(
+      `a deny is never grantable (RFC-0030): refusing to open an approval ticket for ` +
+        `${p.dimension} "${p.token}" held by ${p.bindingSources.join(" and ")} deny — ` +
+        `a deny-hit raises a notify-only prohibited_attempt event, not a request for permission`,
+    );
+  }
+}
+
 /** Build a new ticket with id + requestedAt assigned. */
 export function newRequest(
   fields: Omit<ApprovalRequest, "id" | "requestedAt"> & { expiresAt?: string },
 ): ApprovalRequest {
+  assertGrantable(fields);
   return {
     id: randomUUID(),
     requestedAt: new Date().toISOString(),
@@ -256,6 +277,7 @@ export class InMemoryApprovalProvider implements ApprovalProvider {
   constructor(private readonly signaturePolicy?: SignaturePolicy) {}
 
   async submit(req: ApprovalRequest): Promise<void> {
+    assertGrantable(req);
     this.requests.push(req);
   }
 
@@ -331,6 +353,7 @@ export class FileApprovalProvider implements ApprovalProvider {
   }
 
   async submit(req: ApprovalRequest): Promise<void> {
+    assertGrantable(req);
     this.append({ kind: "request", request: req });
   }
 
