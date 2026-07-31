@@ -95,6 +95,11 @@ export {
 export { canonicalJSON, sha256Hex } from "./canonical.js";
 
 export {
+  toProhibitedAttemptWire,
+  type ProhibitedAttemptWire,
+} from "./wire.js";
+
+export {
   toTraceEvent,
   emitTrace,
   canonicalTraceEvent,

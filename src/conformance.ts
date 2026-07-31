@@ -163,8 +163,20 @@ export interface ProhibitedAttempt {
   token: string;
   /** The deny source(s) that matched: the skill's own deny, the playbook's, or both. */
   bindingSources: Array<"skill" | "playbook">;
-  /** The enclosing playbook's unit id, when its deny was in force. */
+  /**
+   * The deny entry that matched — differs from `token` when a path glob fires
+   * (§17 `matched_pattern`: `legal/hold/**` matches `legal/hold/2025/x.rec`).
+   * When both sources deny, the first-named binding source's entry is pinned.
+   */
+  matchedPattern: string;
+  /**
+   * The enclosing playbook's unit id, when the refusal happened inside a
+   * `kind: playbook` context — whichever source fired (§17: `playbook_id` is
+   * NULL only when there is no playbook context).
+   */
   playbookId?: string;
+  /** The executing playbook step's id, when the caller named one (§17 `step_id`). */
+  stepId?: string;
 }
 
 /**
@@ -177,6 +189,12 @@ export interface ProhibitedAttempt {
 export interface PlaybookContext {
   /** The playbook unit's id — named as the binding source when its deny fires. */
   id: string;
+  /**
+   * The id of the playbook step being adjudicated, when the caller names one.
+   * Never consulted by the adjudication — pinned into a deny-hit's
+   * {@link ProhibitedAttempt} so the §17 wire projection can carry `step_id`.
+   */
+  stepId?: string;
   /** The playbook's declared action_scope; only `deny` is consulted. */
   scope?: ActionScope;
 }
@@ -314,6 +332,21 @@ function bindingSources(
 }
 
 /**
+ * The entry of one deny list that matched `token` — the §17 `matched_pattern`.
+ * For `paths` this is the glob (or prefix) that fired; for `tools` and
+ * `capabilities` an exact match, so the entry equals the token. Undefined when
+ * the list does not deny the token.
+ */
+function matchedDenyEntry(
+  list: string[],
+  dimension: "tools" | "paths" | "capabilities",
+  token: string,
+): string | undefined {
+  if (dimension === "paths") return list.find((entry) => targetInPrefixes(token, [entry]));
+  return list.find((entry) => entry === token);
+}
+
+/**
  * Build the fail-closed verdict for a token an `action_scope.deny` prohibits. The
  * reason cites the exact deny list(s) that fired — the binding source(s), both
  * named when both match (RFC-0030 §4.3b) — and the violating token is pinned
@@ -332,6 +365,13 @@ function deniedVerdict(
 ): ConformanceVerdict {
   const skillList = scope.deny?.[dim] ?? [];
   const playbookList = playbook?.scope?.deny?.[dim] ?? [];
+  // §17 matched_pattern: the deny entry that fired, from the first-named
+  // binding source. Falls back to the token itself, which can only happen if a
+  // source fired without a findable entry — an impossibility kept fail-safe.
+  const matchedPattern =
+    (sources.includes("skill") ? matchedDenyEntry(skillList, dim, token) : undefined) ??
+    (sources.includes("playbook") ? matchedDenyEntry(playbookList, dim, token) : undefined) ??
+    token;
   const cites: string[] = [];
   if (sources.includes("skill")) {
     cites.push(`the skill's action_scope.deny.${dim} [${skillList.join(", ")}]`);
@@ -350,7 +390,13 @@ function deniedVerdict(
       dimension: dim,
       token,
       bindingSources: sources,
-      ...(sources.includes("playbook") && playbook ? { playbookId: playbook.id } : {}),
+      matchedPattern,
+      // The playbook CONTEXT is pinned whenever one was in force — even on a
+      // skill-source deny — because §17's playbook_id/step_id are NULL only
+      // when the refusal happened outside any playbook (the binding source is
+      // its own field and stays exact).
+      ...(playbook ? { playbookId: playbook.id } : {}),
+      ...(playbook?.stepId ? { stepId: playbook.stepId } : {}),
     },
   };
 }

@@ -176,7 +176,7 @@ export interface AuditEvent {
   prohibited?: {
     /** The active skill whose action was refused. */
     skillId: string;
-    /** The enclosing playbook, when its deny contributed to the refusal. */
+    /** The enclosing playbook context, when the refusal happened inside one. */
     playbookId?: string;
     /** The denied token — the tool, target, or capability that was refused. */
     token: string;
