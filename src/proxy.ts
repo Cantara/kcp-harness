@@ -46,7 +46,7 @@ import { toTraceEvent, emitTrace, signTraceEvent } from "./trace-emit.js";
 import type { DecisionTrace } from "kcp-agent";
 import type { BudgetCeiling } from "./budget-ledger.js";
 
-const HARNESS_VERSION = "0.15.1";
+const HARNESS_VERSION = "0.15.2";
 const PROTOCOL_VERSION = "2025-06-18";
 
 /**
