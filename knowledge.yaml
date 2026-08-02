@@ -9,8 +9,8 @@
 
 kcp_version: "0.32"
 project: kcp-harness
-version: 0.15.1
-updated: "2026-07-31"
+version: 0.15.2
+updated: "2026-08-02"
 language: en
 
 trust:

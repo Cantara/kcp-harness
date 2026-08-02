@@ -16,7 +16,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { createInterface, type Interface } from "node:readline";
 import type { DownstreamConfig } from "./config.js";
 
-const HARNESS_VERSION = "0.15.1";
+const HARNESS_VERSION = "0.15.2";
 const INIT_TIMEOUT_MS = 15_000;
 const CALL_TIMEOUT_MS = 60_000;
 
