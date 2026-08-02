@@ -156,7 +156,10 @@ answer-grounding applies to claims, applied to actions:
 
 - A call that stays within the active skill's `tools`/`paths`/`capabilities` proceeds.
 - A call that strays outside it is held **fail-closed** — surfaced as a gap, routed to a
-  human, never silently narrowed or silently allowed.
+  human, never silently narrowed or silently allowed. The reviewer role and policy citation
+  come from [`governance.conformance`](/guide/configuration#conformance-routing) — falling
+  back to `governance.confidence`'s routing if that block is absent, then to a hardcoded
+  default role (`governance-reviewer`) with no policy citation (#43).
 - This check runs *before* plan governance: a scope violation is decided by the loaded skill
   alone, independent of whether a plan would otherwise have approved the call.
 

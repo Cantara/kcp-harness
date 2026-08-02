@@ -15,6 +15,7 @@ import { generateKeyPairSync } from "node:crypto";
 import { checkConformance, deniesToken, type ActionScope, type ObservedAction } from "../src/conformance.js";
 import { HarnessProxy } from "../src/proxy.js";
 import { InMemoryAuditLog, buildProhibitedAttemptEvent } from "../src/audit.js";
+import { parseConfig } from "../src/config.js";
 import type { GovernancePolicy, GovernedDomain, HarnessConfig } from "../src/config.js";
 import { verifyPurchaseReceipt, type PurchaseReceiptPayload, type PurchaseReceiptSignature } from "../src/purchase-receipt.js";
 
@@ -577,6 +578,94 @@ describe("HarnessProxy — conformance gate", () => {
     await call(proxy, 1, "Skill", { skill: "procurement-skill" });
     await call(proxy, 2, "purchase", { vendor: "acme-supplies", amount: 900, currency: "USD" });
     expect(audit.events.some((e) => e.type === "purchase_settled")).toBe(false);
+  });
+});
+
+describe("HarnessProxy — conformance hold routing (#43)", () => {
+  async function holdTicket(config: HarnessConfig) {
+    const audit = new InMemoryAuditLog();
+    const proxy = new HarnessProxy({ config, audit });
+    await call(proxy, 1, "Skill", { skill: "deploy-skill" });
+    await call(proxy, 2, "Read", { file_path: "skills/deploy.md" });
+    const tickets = await proxy.getApprovalProvider()!.list();
+    expect(tickets).toHaveLength(1);
+    return tickets[0].request;
+  }
+
+  it("routes to governance.conformance when configured", async () => {
+    const request = await holdTicket({
+      ...proxyConfig,
+      governance: {
+        ...proxyConfig.governance,
+        conformance: { route_to_role: "conformance-reviewer", expires_after: "24h", policy_ref: "POL-CONFORM-1" },
+      },
+    });
+    expect(request.requiredRole).toBe("conformance-reviewer");
+    expect(request.evidence.policyRef).toBe("POL-CONFORM-1");
+    expect(request.expiresAt).toBeDefined();
+  });
+
+  it("conformance wins when both conformance and confidence are configured", async () => {
+    const request = await holdTicket({
+      ...proxyConfig,
+      governance: {
+        ...proxyConfig.governance,
+        confidence: { threshold: 0.8, route_to_role: "confidence-reviewer", policy_ref: "POL-CONFIDENCE-1" },
+        conformance: { route_to_role: "conformance-reviewer", policy_ref: "POL-CONFORM-1" },
+      },
+    });
+    expect(request.requiredRole).toBe("conformance-reviewer");
+    expect(request.evidence.policyRef).toBe("POL-CONFORM-1");
+  });
+
+  it("falls back to governance.confidence when governance.conformance is absent (legacy behavior)", async () => {
+    const request = await holdTicket({
+      ...proxyConfig,
+      governance: {
+        ...proxyConfig.governance,
+        confidence: { threshold: 0.8, route_to_role: "confidence-reviewer", policy_ref: "POL-CONFIDENCE-1" },
+      },
+    });
+    expect(request.requiredRole).toBe("confidence-reviewer");
+    expect(request.evidence.policyRef).toBe("POL-CONFIDENCE-1");
+  });
+
+  it("falls back to the hardcoded default when neither block is configured", async () => {
+    const request = await holdTicket(proxyConfig);
+    expect(request.requiredRole).toBe("governance-reviewer");
+    expect(request.evidence.policyRef).toBeUndefined();
+  });
+});
+
+describe("conformance config parsing (#43)", () => {
+  it("parses governance.conformance", () => {
+    const config = parseConfig(`
+version: "1.0"
+governance:
+  domains: []
+  policy: {}
+  conformance:
+    route_to_role: conformance-reviewer
+    expires_after: 24h
+    policy_ref: POL-CONFORM-1
+downstream: []
+audit: { path: a.jsonl }
+`);
+    expect(config.governance.conformance?.route_to_role).toBe("conformance-reviewer");
+    expect(config.governance.conformance?.expires_after).toBe("24h");
+    expect(config.governance.conformance?.policy_ref).toBe("POL-CONFORM-1");
+  });
+
+  it("absent block parses as undefined", () => {
+    const config = parseConfig(`
+version: "1.0"
+governance:
+  domains: []
+  policy: {}
+downstream: []
+audit: { path: a.jsonl }
+`);
+    expect(config.governance.conformance).toBeUndefined();
   });
 });
 
