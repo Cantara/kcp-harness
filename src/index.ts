@@ -160,6 +160,7 @@ export {
   type ApprovalRule,
   type ApprovalsConfig,
   type ConfidenceConfig,
+  type ConformanceConfig,
 } from "./config.js";
 
 export { callKcpTool } from "./kcp-bridge.js";

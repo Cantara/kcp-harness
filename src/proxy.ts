@@ -50,9 +50,10 @@ const HARNESS_VERSION = "0.15.1";
 const PROTOCOL_VERSION = "2025-06-18";
 
 /**
- * Role a non-conformant action is routed to when no confidence route role is
- * configured (#39). A conformance hold is an oversight event — a named human
- * decides whether the out-of-scope action may proceed.
+ * Role a non-conformant action is routed to when neither `governance.conformance`
+ * nor `governance.confidence` names a route role (#39, #43). A conformance hold
+ * is an oversight event — a named human decides whether the out-of-scope action
+ * may proceed.
  */
 const CONFORMANCE_REVIEWER_ROLE = "governance-reviewer";
 
@@ -829,7 +830,12 @@ export class HarnessProxy {
         // A hold is already open for this (target, tool) — reuse it.
         ticketId = existing.request.id;
       } else {
-        const routing = this.config.governance.confidence;
+        // Own routing block first; fall back to confidence's (legacy behavior
+        // for deployments that never configured one), then the hardcoded
+        // default (#43). Whole-block precedence, not per-field merge — a
+        // ticket with role from one block and policy from another would be
+        // unauditable.
+        const routing = this.config.governance.conformance ?? this.config.governance.confidence;
         const request = newRequest({
           // The ticket names the action, not just the session (#34).
           ...(correlationId ? { correlationId } : {}),

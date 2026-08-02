@@ -88,6 +88,14 @@ governance:
   #   expires_after: 72h
   #   policy_ref: POL-9.1
 
+  # Conformance-gate routing — an out-of-scope action under an active skill
+  # routes to this role/policy instead of borrowing confidence's above
+  # (absent = falls back to confidence, then a hardcoded default)
+  # conformance:
+  #   route_to_role: account-owner
+  #   expires_after: 24h
+  #   policy_ref: POL-9.2
+
   # Human-approval gates — calls matching a rule are held for a named
   # reviewer (resolve with: kcp-harness approvals approve <id> ...)
   # approvals:

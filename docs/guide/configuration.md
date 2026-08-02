@@ -124,6 +124,23 @@ Approval requirements are **org policy, not knowledge provenance** — they live
 | `expires_after` | duration | TTL for routed tickets |
 | `policy_ref` | string | Policy citation carried as ticket evidence |
 
+## Conformance Routing
+
+`governance.conformance` routes holds opened by the [procedural conformance gate](/guide/governance#procedural-conformance)
+(an active skill's `action_scope` violation) — independent of the confidence gate above, since
+"out of scope" and "low confidence" are different events that may need different reviewers or
+policy citations.
+
+| Field | Type | Description |
+|---|---|---|
+| `route_to_role` | string | Route conformance holds to this approval role (requires `governance.approvals`) |
+| `expires_after` | duration | TTL for routed conformance tickets |
+| `policy_ref` | string | Policy citation carried as conformance ticket evidence |
+
+When `governance.conformance` is absent, a conformance hold falls back to `governance.confidence`'s
+routing fields if configured, then to a hardcoded default role (`governance-reviewer`) with no
+policy citation.
+
 ## Audit
 
 The audit log is an append-only JSONL file. Each line is a self-contained event. See [Audit Log](/api/audit) for the full event schema.

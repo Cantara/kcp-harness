@@ -109,6 +109,23 @@ export interface ConfidenceConfig {
 }
 
 /**
+ * Conformance-gate routing (#39, #43) — org policy for where an out-of-scope
+ * action's pending_review ticket is routed. Independent of `confidence`: a
+ * conformance hold and a low-confidence hold are different events and may
+ * need different reviewers/policy citations. When absent, a conformance hold
+ * falls back to `governance.confidence`'s routing fields (unchanged legacy
+ * behavior), then to a hardcoded default role with no policy citation.
+ */
+export interface ConformanceConfig {
+  /** Route conformance holds to this approval role (requires governance.approvals). */
+  route_to_role?: string;
+  /** TTL for routed conformance tickets ("30m", "72h", "7d"). */
+  expires_after?: string;
+  /** Policy citation carried as conformance ticket evidence. */
+  policy_ref?: string;
+}
+
+/**
  * Signed purchase-receipt configuration (#139) — org policy for producing
  * non-repudiable evidence of a settled governed buy. Absent = purchases still
  * emit an unsigned `purchase_settled` audit event; configuring a key upgrades
@@ -155,6 +172,8 @@ export interface HarnessConfig {
     approvals?: ApprovalsConfig;
     /** Confidence gate for harness_assess (absent = caller must supply a threshold). */
     confidence?: ConfidenceConfig;
+    /** Conformance-gate routing (#39), independent of confidence (absent = falls back to confidence, then a hardcoded default). */
+    conformance?: ConformanceConfig;
     /** Signed purchase-receipt config for settled governed buys (#139). */
     purchase_receipts?: PurchaseReceiptsConfig;
   };
@@ -193,6 +212,7 @@ export function parseConfig(text: string): HarnessConfig {
   const policy = parsePolicy(governance?.["policy"]);
   const approvals = parseApprovals(governance?.["approvals"]);
   const confidence = parseConfidence(governance?.["confidence"]);
+  const conformance = parseConformance(governance?.["conformance"]);
   const downstream = parseDownstream(raw["downstream"]);
   const audit = parseAudit(raw["audit"]);
   const dashboard = parseDashboard(raw["dashboard"]);
@@ -204,6 +224,7 @@ export function parseConfig(text: string): HarnessConfig {
       policy,
       ...(approvals ? { approvals } : {}),
       ...(confidence ? { confidence } : {}),
+      ...(conformance ? { conformance } : {}),
     },
     downstream,
     audit,
@@ -257,6 +278,16 @@ function parseConfidence(raw: unknown): ConfidenceConfig | undefined {
   return {
     threshold,
     severity: c["severity"] === undefined ? undefined : String(c["severity"]),
+    route_to_role: c["route_to_role"] === undefined ? undefined : String(c["route_to_role"]),
+    expires_after: c["expires_after"] === undefined ? undefined : String(c["expires_after"]),
+    policy_ref: c["policy_ref"] === undefined ? undefined : String(c["policy_ref"]),
+  };
+}
+
+function parseConformance(raw: unknown): ConformanceConfig | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const c = raw as Record<string, unknown>;
+  return {
     route_to_role: c["route_to_role"] === undefined ? undefined : String(c["route_to_role"]),
     expires_after: c["expires_after"] === undefined ? undefined : String(c["expires_after"]),
     policy_ref: c["policy_ref"] === undefined ? undefined : String(c["policy_ref"]),
