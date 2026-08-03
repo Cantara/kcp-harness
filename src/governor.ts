@@ -39,7 +39,7 @@ import type { GateVerdict } from "kcp-agent";
 import { readFileSync } from "node:fs";
 import yaml from "js-yaml";
 import type { GovernancePolicy, GovernedDomain, ApprovalRule } from "./config.js";
-import type { ProhibitedAttempt } from "./conformance.js";
+import { checkConformance, type ObservedAction, type PlaybookContext, type ProhibitedAttempt } from "./conformance.js";
 import type { Classification } from "./classifier.js";
 import { matchesPrefix } from "./classifier.js";
 import type { SessionState, ApprovedPlan } from "./session.js";
@@ -83,8 +83,9 @@ export interface GovernanceDecision {
   approved: boolean;
   /** How the decision was made. */
   mode: "plan-first" | "auto-plan" | "kcp-passthrough" | "blocked"
-    | "pending"          // awaiting a named human — approved stays false (fail-closed)
-    | "human-approved";  // a named human resolved it — resolution attached
+    | "pending"           // awaiting a named human — approved stays false (fail-closed)
+    | "human-approved"    // a named human resolved it — resolution attached
+    | "scope-conformant"; // no extractable target, approved by the active skill's own action_scope
   /** The plan that governs this decision (if any). */
   plan?: AgentPlan;
   /** The decision trace (if tracing is enabled). */
@@ -207,6 +208,49 @@ export async function govern(
         reason: `auto-plan failed: ${msg}`,
       };
     }
+  }
+
+  // Mode 3: scope-conformant — no extractable target, but there IS an active
+  // governed skill (or enclosing playbook) whose declared action_scope already
+  // authorizes this tool BY NAME alone (e.g. a simulator tool with no file/URL
+  // argument — wokwi_read_pin, wokwi_start_simulation). Reuses the exact same
+  // pure adjudicator the procedural-conformance gate (proxy.ts's own Step 1b,
+  // enforceConformance) already runs — one deterministic decision, not two
+  // independently-maintained ones. Self-contained on purpose: govern() is used
+  // standalone by non-proxy hosts too (browser, sidecar, in-process), so this
+  // does not assume a caller already ran conformance first.
+  if (session.activeSkill) {
+    const action: ObservedAction = { tool: toolName };
+    const playbook: PlaybookContext | undefined =
+      session.activePlaybook && session.activePlaybook.id !== session.activeSkill.id
+        ? { id: session.activePlaybook.id, scope: session.activePlaybook.scope }
+        : undefined;
+    const verdict = checkConformance(action, session.activeSkill.scope, playbook);
+
+    if (verdict.passed) {
+      return {
+        approved: true,
+        mode: "scope-conformant",
+        reason: `no extractable target; tool "${toolName}" is within active skill "${session.activeSkill.id}"'s declared action_scope: ${verdict.reason}`,
+      };
+    }
+
+    if (verdict.prohibited) {
+      // A deny-hit is refused FINALLY (RFC-0030), regardless of caller — never
+      // downgrade this to the generic "no target" message below. A proxy.ts
+      // caller's own Step 1b conformance check already routes a deny-hit to a
+      // prohibited_attempt event before govern() is ever reached; this is the
+      // self-contained equivalent for a host that only calls govern() directly.
+      return {
+        approved: false,
+        mode: "blocked",
+        reason: verdict.reason,
+        prohibited: verdict.prohibited,
+      };
+    }
+    // Out of scope, not a deny-hit — falls through to the generic block below.
+    // enforceConformance (proxy.ts) is the richer, ticket-routing path for an
+    // ordinary out-of-scope hold; govern() alone never opens an approval ticket.
   }
 
   // No target extractable + governed domain → block
