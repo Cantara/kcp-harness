@@ -162,4 +162,68 @@ describe("governor", () => {
     expect(decision.approved).toBe(false);
     expect(decision.reason).toMatch(/no extractable target/);
   });
+
+  describe("scope-conformant (Gap A: a no-target tool call under an active skill's own action_scope)", () => {
+    const domain: GovernedDomain = { manifest: "./knowledge.yaml", tools: ["wokwi_read_pin"] };
+    const classification: Classification = {
+      governed: true,
+      domain,
+      // No target — a simulator tool with no file/URL argument
+      reason: "governed tool",
+    };
+
+    it("approves a no-target call when the active skill's action_scope authorizes the tool by name", async () => {
+      const session = createSession();
+      session.activeSkill = { id: "sim-verify-blink", scope: { tools: ["wokwi_read_pin", "wokwi_start_simulation"] } };
+
+      const decision = await govern(classification, "wokwi_read_pin", {}, session, policy);
+      expect(decision.approved).toBe(true);
+      expect(decision.mode).toBe("scope-conformant");
+      expect(decision.reason).toMatch(/sim-verify-blink/);
+    });
+
+    it("still blocks (generic fallthrough) when the active skill's scope does not name the tool", async () => {
+      const session = createSession();
+      session.activeSkill = { id: "sim-verify-blink", scope: { tools: ["wokwi_start_simulation"] } };
+
+      const decision = await govern(classification, "wokwi_read_pin", {}, session, policy);
+      expect(decision.approved).toBe(false);
+      expect(decision.mode).toBe("blocked");
+      expect(decision.reason).toMatch(/no extractable target/);
+      expect(decision.prohibited).toBeUndefined();
+    });
+
+    it("blocks with a prohibited deny-hit (never the generic message) when the skill's own deny names the tool", async () => {
+      const session = createSession();
+      session.activeSkill = {
+        id: "sim-verify-blink",
+        scope: { tools: ["wokwi_read_pin", "flash_project"], deny: { tools: ["flash_project"] } },
+      };
+
+      const decision = await govern(classification, "flash_project", {}, session, policy);
+      expect(decision.approved).toBe(false);
+      expect(decision.mode).toBe("blocked");
+      expect(decision.prohibited).toBeDefined();
+      expect(decision.prohibited?.token).toBe("flash_project");
+      expect(decision.prohibited?.bindingSources).toEqual(["skill"]);
+    });
+
+    it("blocks with a prohibited deny-hit bound to the enclosing playbook, not just the skill", async () => {
+      const session = createSession();
+      session.activeSkill = { id: "sim-verify-blink", scope: { tools: ["wokwi_read_pin", "flash_project"] } };
+      session.activePlaybook = { id: "certify-firmware", scope: { deny: { tools: ["flash_project"] } } };
+
+      const decision = await govern(classification, "flash_project", {}, session, policy);
+      expect(decision.approved).toBe(false);
+      expect(decision.prohibited?.bindingSources).toEqual(["playbook"]);
+      expect(decision.prohibited?.playbookId).toBe("certify-firmware");
+    });
+
+    it("does not engage this path at all when no skill is active — unchanged fallthrough", async () => {
+      const session = createSession();
+      const decision = await govern(classification, "wokwi_read_pin", {}, session, policy);
+      expect(decision.approved).toBe(false);
+      expect(decision.reason).toMatch(/no extractable target/);
+    });
+  });
 });
