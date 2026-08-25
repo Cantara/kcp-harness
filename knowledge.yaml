@@ -10,7 +10,7 @@
 kcp_version: "0.32"
 project: kcp-harness
 version: 0.15.3
-updated: "2026-08-02"
+updated: "2026-08-25"
 language: en
 
 trust:
@@ -135,6 +135,32 @@ units:
     scope: module
     audience: [agent, human]
     triggers: [compliance, export, soc2, iso27001, evidence, demo]
+
+  - id: cut-a-release
+    path: skills/cut-a-release/SKILL.md
+    kind: skill
+    intent: "How do I cut a kcp-harness release without breaking the tag-build-npm-publish handoff?"
+    scope: project
+    audience: [agent, operator]
+    triggers: [release, tag, publish, version bump, workflow_dispatch]
+    load_eligible: true
+    action_scope:
+      tools: [read, bash, edit, git]
+      paths: ["package.json", ".github/workflows/release.yml", ".github/workflows/ci.yml"]
+      capabilities: [release]
+
+  - id: resign-knowledge-yaml
+    path: skills/resign-knowledge-yaml/SKILL.md
+    kind: skill
+    intent: "How do I recover from an invalidated knowledge.yaml signature after editing the manifest on a PR branch?"
+    scope: project
+    audience: [agent, operator]
+    triggers: [sign, signature, knowledge.yaml.sig, sign-kcp, resign, PR branch]
+    load_eligible: true
+    action_scope:
+      tools: [read, bash]
+      paths: ["knowledge.yaml", "knowledge.yaml.sig"]
+      capabilities: [key-management]
 
 manifests:
   # §3.6: `id` is REQUIRED and is how federation.manifest references resolve.
