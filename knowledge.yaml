@@ -136,6 +136,16 @@ units:
     audience: [agent, human]
     triggers: [compliance, export, soc2, iso27001, evidence, demo]
 
+manifests:
+  # §3.6: `id` is REQUIRED and is how federation.manifest references resolve.
+  # Without it these entries are unreferenceable and the manifest fails validation.
+  - id: kcp-spec
+    url: https://cantara.github.io/knowledge-context-protocol/knowledge.yaml
+    relationship: foundation
+  - id: kcp-agent
+    url: https://raw.githubusercontent.com/Cantara/kcp-agent/main/knowledge.yaml
+    relationship: foundation
+
 signing:
   scheme: ed25519
   scope: this-manifest
