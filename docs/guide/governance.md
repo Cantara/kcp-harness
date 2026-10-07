@@ -105,8 +105,7 @@ permission is a policy rule, not a click. An approved ticket is a *grant*, bound
 - the **arguments digest** of the intercepted call (SHA-256 of the canonical JSON of the
   arguments, excluding `traceparent` and `_meta`). Limit: the digest covers the arguments as the
   proxy received them; a retry with different arguments is a different decision and opens a new
-  ticket. Paths that have no call arguments (the `harness_assess` override) bind to the task text
-  only.
+  ticket. See [Argument binding](#argument-binding) for tickets that carry no digest.
 
 and it lapses, as set by the rule's `grant`:
 
@@ -117,14 +116,32 @@ and it lapses, as set by the rule's `grant`:
 | `15m` / `4h` / `1d` | That long after the reviewer approved, same session, capped by `grant_max`. |
 
 `governance.approvals.grant_max` (default `24h`) is a hard ceiling on every grant, measured from
-the moment of approval — including `once` grants that are never used. An approval is never
-permanent.
+the moment the **store** recorded the approval — including `once` grants that are never used. An
+approval is never permanent.
+
+**Trusted time.** The window is *not* measured from the resolution's `reviewedAt`, which the
+reviewer (or whatever wrote the record) supplies. The provider stamps `resolvedAtStore` from its own
+clock when it appends the resolution, overwriting anything the caller sent, and every window
+(`once`, `session`, a duration, and the `grant_max` cap) starts there. `reviewedAt` stays on the
+record as display and evidence. Consequently:
+
+- a back-dated `reviewedAt` does not shorten a grant, and a future-dated one does not extend it;
+- `resolve()` refuses a `reviewedAt` more than `approvals.max_reviewed_at_skew` (default `5m`)
+  ahead of the store's clock, or earlier than the ticket's `requestedAt`; a record found in the
+  store that breaks the same rules (or whose own stamp is in the future) is **ignored** on read;
+- a resolution written by a harness before the stamp existed (a *legacy* resolution) has no
+  `resolvedAtStore`. Its window starts at `min(reviewedAt, modification time of the store file,
+  now)` — the file's mtime is the store's own clock but only an upper bound on when the line was
+  written (the file may have been appended to since), so a legacy window can start later than the
+  real approval by at most the time since the file was last written, and never later than now. It
+  can no longer be pushed into the future by the record itself. `approvals list` marks these
+  `[legacy time]`.
 
 A call outside a valid grant is **not** approved. It opens a new `pending_review` ticket and the
 audit log records a `grant_denied` event with the reason: `expired`, `wrong_session`, `used`,
-`args_mismatch` or `invalid`. `kcp-harness approvals list` shows used tickets (`used`), the
-opening session of every ticket, and flags approved tickets whose grant lapsed
-(`[grant expired]`).
+`args_mismatch` or `invalid` (plus a finer `detail` such as `args_unbound` or `resolution_ignored`).
+`kcp-harness approvals list` shows used tickets (`used`), the opening session of every ticket, and
+flags approved tickets whose grant lapsed (`[grant expired]`).
 
 Only tickets for the **same session, tool, target** (and arguments) are considered, and the
 newest decides: an older approval never outlives a newer dismissal or a newer pending ticket.
@@ -134,11 +151,105 @@ newest decides: an older approval never outlives a newer dismissal or a newer pe
 `consume()` for a `once` grant — the call is not approved (`invalid`).
 
 **Migration.** Tickets approved before grants existed carry no grant metadata. They are treated
-as `session`-scoped by their `request.sessionId` and expire at `resolvedAt + grant_max`. They have
-no arguments digest, so they stay unbound by arguments — a documented limit of migrated tickets.
+as `session`-scoped by their `request.sessionId` and expire at the trusted resolution time +
+`grant_max`. They have no arguments digest and no `argsBound` flag (*legacy* tickets, see below).
 Previously such an approval was permanent and cross-session; after upgrading, an old approval no
 longer authorises a new session or anything older than `grant_max`. Re-approval is the intended
 path.
+
+### Argument binding
+
+A ticket opened by the proxy for an ordinary governed call always carries the `argsDigest` of that
+call's arguments, and a grant covers only a call with the same digest. Some tickets cannot:
+
+| Ticket | `argsDigest` | `argsBound` | Covers |
+|---|---|---|---|
+| bound (every governed tool call, every conformance hold) | yes | — | the exact (tool, target) **and** arguments |
+| unbound | no | `false`, with `argsUnboundReason` | the exact (tool, target), any arguments |
+| legacy (written before binding was explicit) | no | absent | the exact (tool, target), any arguments |
+
+The tickets the harness opens itself are unbound only for **`harness_assess`**: it has no call
+arguments to digest — the task text is its target — so its ticket says
+`argsBound: false, argsUnboundReason: "no_call_arguments"`. A custom caller of `newRequest()` that
+supplies no digest gets `argsBound: false, argsUnboundReason: "not_supplied"`; it never produces a
+silent unbound ticket.
+
+An unbound grant is valid only for the exact (tool, target), only for `once` or `session` grants
+(a duration grant on an unbound ticket is refused), and never beyond `grant_max`. Each time one is
+used the audit log records a `grant_unbound` event (and the decision in the `tool_call` event
+carries `grantUnbound`). Legacy tickets keep the pre-binding rule so an upgrade does not strand
+pending work, and are marked `[legacy: args unbound]` in `approvals list`; explicit unbound tickets
+show `[args unbound: <reason>]`.
+
+`governance.approvals.require_args_binding: true` makes an unbound or legacy ticket **never** a
+grant (`grant_denied`, reason `invalid`, detail `args_unbound`; the call then opens a new, bound
+ticket). The one exemption is a ticket whose reason is `no_call_arguments`, because for a call with
+no arguments the (tool, target) *is* the whole call; without it the confidence-gate override could
+never be granted. The default is `false` for compatibility; **`true` is recommended** for any
+deployment that does not hold pre-upgrade tickets.
+
+### Ticket records on read
+
+The file store is an append-only log that is *replayed on every read*, so a record can reach it
+without going through `resolve()`. The read path therefore holds the same line `resolve()` does:
+
+- **Signatures.** With `require_signed_resolutions: true`, every resolution is verified when read
+  (against `trusted_keys`, if set). An unsigned or unverifiable one is **ignored**: the ticket
+  reads as still pending, no grant results, `approvals list` shows `[unsigned: ignored]` (or
+  `[bad signature: ignored]`), and a call that hits the ticket is denied with `grant_denied`,
+  reason `invalid`, detail `resolution_ignored`. A forged line cannot shut a legitimate reviewer
+  out: the next *valid* resolution still resolves the ticket.
+- **First terminal resolution wins.** The first valid `approved` / `dismissed` record for a ticket
+  is its resolution; every later record for the same ticket id is ignored and counted, whatever it
+  says (`approvals list` shows `[extra record ignored]`, the audit log records one
+  `approval_record_ignored` event per ticket per process). So a dismissed ticket cannot be
+  re-approved by an appended line, an approved one cannot be flipped to dismissed, a `used` ticket
+  stays `used`, and a record whose trusted time is after the ticket's `expires_after` does not
+  resurrect an expired ticket. `resolve()` refuses a second resolution of a terminal ticket and
+  detects losing a race to another writer.
+- **Malformed or time-implausible records** (no reviewer or `policyRef`, unparseable dates, a future
+  stamp, a `reviewedAt` before the ticket's `requestedAt`) are ignored the same way.
+- A second `request` line that reuses an existing ticket id cannot replace the ticket's terms; the
+  first one wins.
+
+The `once` guarantee is unchanged: consuming a grant is still a compare-and-swap on the first
+`use` record in log order.
+
+### Ticket store trust model
+
+The built-in file store is a **trusted-writer** medium: it assumes that whoever can write to its
+directory is allowed to. The hardening above narrows what a *mistaken or careless* writer can do; it
+does not make the directory a security boundary. Plainly, what the store does **not** protect:
+
+- **Deletion and truncation.** Anyone with write access to the store directory can delete or
+  truncate `approvals.jsonl`. A deleted resolution reads as a pending ticket (fail-closed for that
+  ticket), a deleted *request* makes the ticket vanish, and a deleted `use` record makes a consumed
+  `once` grant usable again. The audit log's hash chain shows tampering with *the audit log*; the
+  ticket store has no equivalent.
+- **Forged approvals when signatures are not required.** Without `require_signed_resolutions`, a
+  well-formed `approved` line written straight into the file is accepted: nothing proves a human
+  wrote it. The read-path checks above stop it from being *stronger* than `resolve()` would allow
+  (time, ordering, terminal states), not from existing. **Turn on `require_signed_resolutions` and
+  pin `trusted_keys` for any deployment where the store directory is writable by a process the
+  agent can influence.**
+- **Forgery with signatures on.** A valid forged record needs the reviewer's private key. Without
+  `trusted_keys` the signature's *embedded* key is used, which proves the record was not altered
+  but not *who* signed it — anyone can sign with a key of their own. Pin `trusted_keys`.
+- **The store's time is not signed.** The signature commits to `reviewedAt`, not to
+  `resolvedAtStore`. A writer holding a validly signed record can append it later with a store
+  stamp of their choosing (bounded to the past by the checks above, never beyond now plus the
+  skew): this can only start a grant window *earlier* than the real approval or lose time to
+  `grant_max`, but it can replay a stolen signed approval for the ticket it was signed for, until
+  the ticket's expiry or `grant_max`.
+- **Legacy records** (no store stamp) are trusted at `min(reviewedAt, file mtime, now)`; a backdated
+  unsigned legacy-style line is indistinguishable from a real old one.
+- **Clock integrity.** Time is the provider's clock. An attacker who controls the host clock
+  controls every window.
+- **Availability.** Appending garbage cannot grant anything, but it can leave a ticket unreadable
+  (torn lines are skipped) or flood the log.
+
+For stronger guarantees, implement `ApprovalProvider` over a store with its own access control and
+append-only history (a ticketing system, a database with a service account), and sign resolutions.
 
 ### Scope of the pass-through
 
