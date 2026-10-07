@@ -91,6 +91,11 @@ kcp-harness approvals approve <id> --reviewer "Kari N." --policy-ref POL-7.2 \
   --private-key ./reviewer-key.pem [--key-id kari-2026]
 ```
 
+`list` shows every ticket with its state (`pending_review`, `approved`, `dismissed`, `expired`,
+`used`), the session that opened it and its grant. An approved ticket whose grant has lapsed is
+flagged `[grant expired]`; a consumed `once` grant is `used`, with the correlation id of the call
+that used it. See [Approval grants](/guide/governance#approval-grants).
+
 | Flag | Required | Description |
 |---|---|---|
 | `--state` | No | Filter `list` by ticket state |

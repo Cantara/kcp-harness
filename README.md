@@ -211,10 +211,18 @@ event. Long-running sessions stay honest.
 ### Approval tickets
 
 Calls matching an approval rule open a durable ticket
-(`pending_review → approved | dismissed | expired`). The ticket store survives restarts —
+(`pending_review → approved | dismissed | expired`, plus `used` for a consumed one-shot grant). The ticket store survives restarts —
 sessions are ephemeral, human review is not. Every resolution records *who* approved,
 *when*, and *which policy* it satisfies — evidence generated at approval time, never
 reconstructed from logs.
+
+**An approval is a bounded grant, never a standing permission.** It covers the session that
+opened the ticket, the exact tool and target, and the call's arguments digest — and it lapses.
+Each rule sets `grant: once | session | <duration>` (default `session`), always capped by
+`governance.approvals.grant_max` (default `24h`). A call outside a valid grant is denied, audited
+as `grant_denied` (`expired`, `wrong_session`, `used`, ...) and opens a *new* ticket. A standing
+permission is a policy rule, not a click. See
+[Governance Model](docs/guide/governance.md#approval-grants).
 
 ### Confidence verdicts
 
@@ -254,6 +262,8 @@ governance:
         required_role: account-owner
         expires_after: 72h
         policy_ref: POL-7.2
+        grant: session           # once | session | 15m / 4h / 1d  (default: session)
+    grant_max: 24h               # hard cap on any approval's validity (default 24h)
 
 audit:
   path: ".kcp-harness/audit.jsonl"

@@ -20,7 +20,7 @@ import { classify, extractTargets, type Classification } from "./classifier.js";
 import { govern, assessSkillEligibility, type GovernanceDecision, type ApprovalContext } from "./governor.js";
 import { checkConformance, type ObservedAction, type PlaybookContext } from "./conformance.js";
 import { deriveCorrelation } from "./correlation.js";
-import { providerFromConfig, latestForCall, newRequest, parseDuration, type ApprovalProvider } from "./approval.js";
+import { providerFromConfig, resolveGrant, grantMaxMs, argsDigest, newRequest, parseDuration, type ApprovalProvider } from "./approval.js";
 import { assess } from "kcp-agent";
 import { signPurchaseReceipt, type PurchaseReceiptPayload } from "./purchase-receipt.js";
 import {
@@ -31,6 +31,7 @@ import {
   buildBudgetEvent,
   buildDriftEvent,
   buildApprovalEvent,
+  buildGrantDeniedEvent,
   buildConfidenceEvent,
   buildConformanceEvent,
   buildSkillEvent,
@@ -171,6 +172,7 @@ export class HarnessProxy {
       this.approvals = {
         provider: providerFromConfig(approvalsConfig),
         rules: approvalsConfig.rules,
+        grantMax: approvalsConfig.grant_max,
       };
     }
 
@@ -366,7 +368,23 @@ export class HarnessProxy {
           this.session,
           this.config.governance.policy,
           this.approvals,
+          undefined,
+          correlationId,
         );
+
+        // An approval existed but did not cover this call — its own audit event, with the reason
+        if (governance.grantDenied) {
+          this.audit.emit(
+            buildGrantDeniedEvent(
+              this.session.id,
+              nextSequence(this.session),
+              governance.grantDenied,
+              toolName,
+              classification.target ?? "",
+              correlationId,
+            ),
+          );
+        }
 
         // A freshly opened ticket is its own audit event
         if (governance.submitted && governance.pendingId && this.approvals) {
@@ -706,6 +724,9 @@ export class HarnessProxy {
                 reviewer: s.resolution?.reviewer,
                 reviewedAt: s.resolution?.reviewedAt,
                 note: s.resolution?.note,
+                sessionId: s.request.sessionId,
+                grant: s.request.grant?.mode ?? "session",
+                ...(s.use ? { usedAt: s.use.usedAt, usedByCorrelationId: s.use.correlationId } : {}),
               })),
             }, null, 2),
           }],
@@ -821,14 +842,28 @@ export class HarnessProxy {
 
     if (this.approvals) {
       const provider = this.approvals.provider;
-      const existing = await latestForCall(provider, target, toolName);
-      if (existing?.state === "approved" && existing.resolution) {
-        // A named human authorized this out-of-scope action — allow on retry.
+      const grant = await resolveGrant(provider, {
+        target,
+        toolName,
+        sessionId: this.session.id,
+        argsDigest: argsDigest(args),
+        maxMs: grantMaxMs(this.approvals.grantMax),
+        correlationId,
+      });
+      if (grant.kind === "open" && grant.denied) {
+        this.audit.emit(
+          buildGrantDeniedEvent(this.session.id, nextSequence(this.session), grant.denied, toolName, target, correlationId),
+        );
+      }
+      if (grant.kind === "granted") {
+        // A named human authorized this out-of-scope action — allow, within the grant's bounds.
         overridden = true;
-        ticketId = existing.request.id;
-      } else if (existing?.state === "pending_review") {
-        // A hold is already open for this (target, tool) — reuse it.
-        ticketId = existing.request.id;
+        ticketId = grant.status.request.id;
+      } else if (grant.kind === "pending") {
+        // A hold is already open for this session's (target, tool) — reuse it.
+        ticketId = grant.status.request.id;
+      } else if (grant.kind === "invalid") {
+        // No session to bind a grant to — hold fail-closed without opening a ticket.
       } else {
         // Own routing block first; fall back to confidence's (legacy behavior
         // for deployments that never configured one), then the hardcoded
@@ -847,6 +882,7 @@ export class HarnessProxy {
           expiresAt: routing?.expires_after
             ? new Date(Date.now() + parseDuration(routing.expires_after)).toISOString()
             : undefined,
+          argsDigest: argsDigest(args),
           evidence: {
             policyRef: routing?.policy_ref,
             detail: verdict.reason,
@@ -959,25 +995,42 @@ export class HarnessProxy {
 
     if (!verdict.passed && routing && this.approvals) {
       const provider = this.approvals.provider;
-      const existing = await latestForCall(provider, task, "harness_assess");
+      const grant = await resolveGrant(provider, {
+        target: task,
+        toolName: "harness_assess",
+        sessionId: this.session.id,
+        maxMs: grantMaxMs(this.approvals.grantMax),
+        correlationId,
+      });
+      if (grant.kind === "open" && grant.denied) {
+        this.audit.emit(
+          buildGrantDeniedEvent(this.session.id, nextSequence(this.session), grant.denied, "harness_assess", task, correlationId),
+        );
+      }
 
-      if (existing?.state === "approved" && existing.resolution) {
-        // The gate failed, but a named human has overridden it for this task.
+      if (grant.kind === "granted") {
+        // The gate failed, but a named human has overridden it for this task — in this session,
+        // within the grant's bounds.
+        const existing = grant.status;
         allowed = true;
         override = {
-          reviewer: existing.resolution.reviewer,
-          reviewedAt: existing.resolution.reviewedAt,
-          policyRef: existing.resolution.policyRef,
+          reviewer: existing.resolution!.reviewer,
+          reviewedAt: existing.resolution!.reviewedAt,
+          policyRef: existing.resolution!.policyRef,
           ticketId: existing.request.id,
         };
-      } else if (existing?.state === "pending_review") {
+      } else if (grant.kind === "pending") {
+        const existing = grant.status;
         ticketInfo = ticketSummary(existing.request.id, existing.state, existing.request.requiredRole);
-      } else if (existing?.state === "dismissed" && existing.resolution) {
+      } else if (grant.kind === "dismissed") {
+        const existing = grant.status;
         dismissed = {
-          reviewer: existing.resolution.reviewer,
-          note: existing.resolution.note,
+          reviewer: existing.resolution!.reviewer,
+          note: existing.resolution!.note,
           ticketId: existing.request.id,
         };
+      } else if (grant.kind === "invalid") {
+        // No session id: cannot bind a grant — stay blocked, open nothing.
       } else {
         // None yet, or the last ticket expired → open a fresh one with the
         // verdict as evidence, generated at gate time.

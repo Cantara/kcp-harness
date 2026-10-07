@@ -63,6 +63,13 @@ export interface ApprovalRule {
   expires_after?: string;
   /** Policy/regulatory citation this rule enforces — carried as ticket evidence. */
   policy_ref?: string;
+  /**
+   * What an approval of a ticket from this rule authorises: `once` (consumed by the first
+   * matching call), `session` (the session that opened the ticket, until `grant_max`), or a
+   * duration (`15m`, `4h`, `1d`; same session, capped by `grant_max`). Default `session`.
+   * An approval is never permanent — a standing permission is a policy rule, not a click.
+   */
+  grant?: string;
 }
 
 /** Human-approval configuration — org policy, deliberately not manifest data. */
@@ -73,6 +80,11 @@ export interface ApprovalsConfig {
   dir?: string;
   /** Rules evaluated before any automated governance path. */
   rules: ApprovalRule[];
+  /**
+   * Hard maximum validity of any approval, whatever the rule's `grant` says (default `24h`).
+   * Measured from the moment a reviewer approved.
+   */
+  grant_max?: string;
   /**
    * Require an ed25519 signature on every resolution (default: false). When
    * true, resolving a ticket fails closed if the signature is missing or
@@ -246,6 +258,7 @@ function parseApprovals(raw: unknown): ApprovalsConfig | undefined {
     provider: a["provider"] === "memory" ? "memory" : "file",
     dir: a["dir"] === undefined ? undefined : String(a["dir"]),
     rules,
+    grant_max: a["grant_max"] === undefined ? undefined : parseGrantMax(a["grant_max"]),
     require_signed_resolutions: a["require_signed_resolutions"] === true,
     trusted_keys: Array.isArray(a["trusted_keys"]) ? a["trusted_keys"].map(String) : undefined,
   };
@@ -265,7 +278,23 @@ function parseApprovalRule(raw: Record<string, unknown>): ApprovalRule {
     required_role: requiredRole,
     expires_after: raw["expires_after"] === undefined ? undefined : String(raw["expires_after"]),
     policy_ref: raw["policy_ref"] === undefined ? undefined : String(raw["policy_ref"]),
+    grant: raw["grant"] === undefined ? undefined : parseGrant(raw["grant"]),
   };
+}
+
+const DURATION_RE = /^\d+[mhd]$/;
+
+/** A rule's grant: "once" | "session" | duration. A typo must not silently widen scope. */
+function parseGrant(raw: unknown): string {
+  const g = String(raw).trim();
+  if (g === "once" || g === "session" || (DURATION_RE.test(g) && Number.parseInt(g, 10) > 0)) return g;
+  throw new Error(`invalid approval grant "${g}" — expected once, session, or a duration like 15m, 4h, 1d`);
+}
+
+function parseGrantMax(raw: unknown): string {
+  const g = String(raw).trim();
+  if (DURATION_RE.test(g) && Number.parseInt(g, 10) > 0) return g;
+  throw new Error(`invalid approvals.grant_max "${g}" — expected a duration like 4h, 1d`);
 }
 
 function parseConfidence(raw: unknown): ConfidenceConfig | undefined {

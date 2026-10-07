@@ -39,6 +39,7 @@ governance:
   approvals:                   # Human-approval gates
     provider: file             # Ticket store: file (persisted) or memory
     dir: .kcp-harness/approvals
+    grant_max: 24h             # Hard cap on any approval's validity (default 24h)
     require_signed_resolutions: false  # true: an unsigned/invalid --private-key resolution
                                         # fails closed — see api/cli.md `approvals approve`
     trusted_keys:               # Optional. Reviewer public keys (paths or inline PEM/base64/
@@ -108,6 +109,11 @@ for the state machine and invariants.
 | `rules[].required_role` | string | Role that must approve — required |
 | `rules[].expires_after` | duration | Ticket TTL (`30m`, `72h`, `7d`); expired = fail-closed |
 | `rules[].policy_ref` | string | Policy citation carried as ticket evidence |
+| `rules[].grant` | `once` \| `session` \| duration | What an approval authorises: the first matching call (`once`), the opening session (`session`, default), or a duration (`15m`, `4h`, `1d`, same session). Always capped by `grant_max`. A typo is a config error |
+| `grant_max` | duration | Hard maximum validity of any approval, from the moment of approval (default `24h`) |
+
+An approval is a bounded grant, never a standing permission — see
+[Approval grants](/guide/governance#approval-grants).
 
 Approval requirements are **org policy, not knowledge provenance** — they live here in
 `harness.yaml`, never in the (signed) `knowledge.yaml`.

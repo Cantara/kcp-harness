@@ -47,10 +47,14 @@ import { isPathApproved, addPlan, recordSpend } from "./session.js";
 import type { SpendResult } from "./budget-ledger.js";
 import { deriveCorrelation, traceparentFromArgs } from "./correlation.js";
 import {
-  latestForCall,
+  argsDigest,
+  grantMaxMs,
   newRequest,
   parseDuration,
+  parseGrantSetting,
+  resolveGrant,
   type ApprovalProvider,
+  type GrantDenyReason,
   type ApprovalResolution,
 } from "./approval.js";
 
@@ -58,6 +62,8 @@ import {
 export interface ApprovalContext {
   provider: ApprovalProvider;
   rules: ApprovalRule[];
+  /** Hard maximum validity of any approval (duration like "24h"; default 24h). */
+  grantMax?: string;
 }
 
 /**
@@ -105,6 +111,12 @@ export interface GovernanceDecision {
   /** The named human's resolution, when mode is "human-approved". */
   resolution?: ApprovalResolution;
   /**
+   * Set when an approval existed for this (tool, target) but did NOT cover this call
+   * (expired, wrong_session, used, args_mismatch, invalid). The proxy audits it as a
+   * `grant_denied` event; the call itself then re-opens a new ticket (mode "pending").
+   */
+  grantDenied?: { reason: GrantDenyReason; ticketId?: string };
+  /**
    * The deny-hit that decided this call, when an `action_scope.deny` held it
    * (RFC-0030 / KCP 0.32, §4.3b): the denied token, dimension, and binding
    * source(s) — the skill's deny, the enclosing playbook's, or both. A deny is
@@ -133,12 +145,19 @@ export async function govern(
   policy: GovernancePolicy,
   approvals?: ApprovalContext,
   manifestSource?: InMemoryManifest,
+  /** Correlation id of THIS call as the audit chain records it (recorded on a consumed `once` grant). */
+  callCorrelationId?: string,
 ): Promise<GovernanceDecision> {
   // KCP tools pass through — they ARE the governance layer
   if (toolName.startsWith("kcp_")) {
     return { approved: true, mode: "kcp-passthrough", reason: "KCP tool — governance layer itself" };
   }
 
+  // Scope of this pass-through: it applies ONLY to calls the classifier did not place under a
+  // governed domain (no domain path/URL matched) and is therefore not fail-closed by design —
+  // the harness governs the domains an operator declares, not every tool the agent holds.
+  // Anything classified as governed never reaches this branch. See the PR's open question on
+  // whether an ungoverned call should be deniable by policy (e.g. a deny-by-default domain).
   if (!classification.governed || !classification.domain) {
     return { approved: true, mode: "kcp-passthrough", reason: "ungoverned tool call" };
   }
@@ -159,9 +178,12 @@ export async function govern(
           session,
           domain,
           approvals.provider,
+          args,
+          approvals.grantMax,
           // Same reduction the audit path uses, from the same args — one source of truth
           // for what this call's correlation is.
           traceparentFromArgs(args) ? deriveCorrelation(args).correlationId : undefined,
+          callCorrelationId,
         );
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
@@ -272,9 +294,15 @@ function ruleMatches(rule: ApprovalRule, toolName: string, target: string | unde
 }
 
 /**
- * Decide a rule-matched call from the approval store:
- * approved → allow with the resolution attached; pending → wait;
- * dismissed → terminal block; expired or absent → open a fresh ticket.
+ * Decide a rule-matched call from the approval store. An approval is a bounded GRANT, not a
+ * standing permission (see resolveGrant): approved AND the grant still covers this call (same
+ * session, unexpired, unused, same arguments) → allow with the resolution attached; pending
+ * for this session → wait; dismissed for this session → terminal block; anything else
+ * (absent, expired, used, other session) → open a NEW ticket, never reuse the old approval.
+ *
+ * Argument binding: the digest covers the arguments as the proxy received them (minus
+ * correlation carriers). Calls that reach governByApproval always have args; a ticket opened
+ * elsewhere without a digest is unbound by arguments (see docs, "Migration").
  */
 async function governByApproval(
   rule: ApprovalRule,
@@ -283,22 +311,45 @@ async function governByApproval(
   session: SessionState,
   domain: GovernedDomain,
   provider: ApprovalProvider,
+  args: Record<string, unknown>,
+  grantMax: string | undefined,
   correlationId?: string,
+  callCorrelationId?: string,
 ): Promise<GovernanceDecision> {
-  const existing = await latestForCall(provider, target, toolName);
+  const digest = argsDigest(args);
+  const outcome = await resolveGrant(provider, {
+    target,
+    toolName,
+    sessionId: session.id,
+    argsDigest: digest,
+    maxMs: grantMaxMs(grantMax),
+    ...(callCorrelationId ?? correlationId ? { correlationId: (callCorrelationId ?? correlationId) as string } : {}),
+  });
 
-  if (existing?.state === "approved" && existing.resolution) {
+  if (outcome.kind === "invalid") {
     return {
-      approved: true,
-      mode: "human-approved",
-      resolution: existing.resolution,
-      reason:
-        `approved by ${existing.resolution.reviewer} at ${existing.resolution.reviewedAt} ` +
-        `(${existing.resolution.policyRef}) — ticket ${existing.request.id}`,
+      approved: false,
+      mode: "blocked",
+      reason: "approval grant cannot be evaluated (no session id) — fail-closed",
+      grantDenied: outcome.denied,
     };
   }
 
-  if (existing?.state === "pending_review") {
+  if (outcome.kind === "granted") {
+    const { status } = outcome;
+    const res = status.resolution!;
+    return {
+      approved: true,
+      mode: "human-approved",
+      resolution: res,
+      reason:
+        `approved by ${res.reviewer} at ${res.reviewedAt} ` +
+        `(${res.policyRef}) — ticket ${status.request.id}, grant ${status.request.grant?.mode ?? "session"}`,
+    };
+  }
+
+  if (outcome.kind === "pending") {
+    const { status: existing } = outcome;
     return {
       approved: false,
       mode: "pending",
@@ -309,17 +360,20 @@ async function governByApproval(
     };
   }
 
-  if (existing?.state === "dismissed" && existing.resolution) {
+  if (outcome.kind === "dismissed") {
+    const { status: existing } = outcome;
     return {
       approved: false,
       mode: "blocked",
       reason:
-        `dismissed by ${existing.resolution.reviewer}` +
-        `${existing.resolution.note ? `: ${existing.resolution.note}` : ""} — ticket ${existing.request.id}`,
+        `dismissed by ${existing.resolution!.reviewer}` +
+        `${existing.resolution!.note ? `: ${existing.resolution!.note}` : ""} — ticket ${existing.request.id}`,
     };
   }
 
-  // No usable ticket (none yet, or the last one expired) → open a fresh one.
+  // No usable ticket (none yet, expired, used, or approved for something else) → open a fresh one.
+  const previous = outcome.previous;
+  const denied = outcome.denied;
   const request = newRequest({
     ...(correlationId ? { correlationId } : {}),
     sessionId: session.id,
@@ -330,20 +384,27 @@ async function governByApproval(
     expiresAt: rule.expires_after
       ? new Date(Date.now() + parseDuration(rule.expires_after)).toISOString()
       : undefined,
+    grant: parseGrantSetting(rule.grant),
+    argsDigest: digest,
     evidence: {
       manifest: domain.manifest,
       policyRef: rule.policy_ref,
-      detail: existing?.state === "expired" ? `previous ticket ${existing.request.id} expired` : undefined,
+      detail: denied
+        ? `previous approval ${denied.ticketId ?? ""} did not cover this call (${denied.reason})`.replace("  ", " ")
+        : previous?.state === "expired"
+          ? `previous ticket ${previous.request.id} expired`
+          : undefined,
     },
   });
   await provider.submit(request);
-
   return {
     approved: false,
     mode: "pending",
     pendingId: request.id,
     submitted: true,
+    ...(denied ? { grantDenied: denied } : {}),
     reason:
+      `${denied ? `approval ${denied.ticketId ?? ""} no longer covers this call (${denied.reason}); `.replace("  ", " ") : ""}` +
       `pending approval ${request.id} from role ${rule.required_role}` +
       `${rule.policy_ref ? ` (${rule.policy_ref})` : ""} — ` +
       `re-try after approval or check harness_approvals`,

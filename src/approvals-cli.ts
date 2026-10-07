@@ -15,7 +15,7 @@
 
 import { readFileSync } from "node:fs";
 import type { HarnessConfig } from "./config.js";
-import { providerFromConfig, type ApprovalState, type ApprovalStatus } from "./approval.js";
+import { evaluateGrant, grantMaxMs, providerFromConfig, type ApprovalState, type ApprovalStatus } from "./approval.js";
 import { signResolution, type ResolutionSignature } from "./resolution-signature.js";
 import { buildApprovalEvent, type AuditWriter } from "./audit.js";
 
@@ -37,7 +37,8 @@ export async function runApprovals(
       const state = flag(argv, "--state") as ApprovalState | undefined;
       const statuses = await provider.list(state ? { state } : undefined);
       if (statuses.length === 0) return "no approval tickets\n";
-      return statuses.map(formatStatus).join("\n") + "\n";
+      const maxMs = grantMaxMs(approvalsConfig.grant_max);
+      return statuses.map((s) => formatStatus(s, maxMs)).join("\n") + "\n";
     }
 
     case "approve":
@@ -101,7 +102,7 @@ export async function runApprovals(
         ),
       );
 
-      return formatStatus(status) + "\n";
+      return formatStatus(status, grantMaxMs(approvalsConfig.grant_max)) + "\n";
     }
 
     default:
@@ -109,16 +110,24 @@ export async function runApprovals(
   }
 }
 
-function formatStatus(s: ApprovalStatus): string {
+function formatStatus(s: ApprovalStatus, maxMs: number): string {
   const head = `${s.request.id}  ${s.state}  ${s.request.toolName} ${s.request.target}  role=${s.request.requiredRole}`;
   const when = `  requested=${s.request.requestedAt}${s.request.expiresAt ? ` expires=${s.request.expiresAt}` : ""}`;
   const signed = s.resolution?.signature
     ? ` [signed${s.resolution.signature.keyId ? ` ${s.resolution.signature.keyId}` : ""}]`
     : "";
+  // An approved ticket whose grant has lapsed keeps its stored state but is flagged, so a
+  // reviewer never reads a dead approval as a live one.
+  const lapsed =
+    s.state === "approved" && !evaluateGrant(s, { target: s.request.target, toolName: s.request.toolName, sessionId: s.request.sessionId, argsDigest: s.request.argsDigest, maxMs }).ok
+      ? " [grant expired]"
+      : "";
+  const grant = s.request.grant ? ` grant=${s.request.grant.mode}${s.request.grant.durationMs ? `:${s.request.grant.durationMs / 60_000}m` : ""}` : "";
+  const used = s.use ? `\n  used at ${s.use.usedAt}${s.use.correlationId ? ` by correlation ${s.use.correlationId}` : ""} (session ${s.use.sessionId})` : "";
   const who = s.resolution
     ? `\n  ${s.resolution.state} by ${s.resolution.reviewer} at ${s.resolution.reviewedAt} (${s.resolution.policyRef})${signed}${s.resolution.note ? ` — ${s.resolution.note}` : ""}`
     : "";
-  return head + when + who;
+  return head + lapsed + when + ` session=${s.request.sessionId}` + grant + who + used;
 }
 
 function flag(argv: string[], name: string): string | undefined {
