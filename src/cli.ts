@@ -13,7 +13,7 @@
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { loadConfig, parseConfig, type HarnessConfig } from "./config.js";
+import { checkGovernance, loadConfig, parseConfig, type HarnessConfig } from "./config.js";
 import { serveProxy } from "./proxy.js";
 import { generate, generateAll, listAgents } from "./integrations/generate.js";
 import type { IntegrationOptions } from "./integrations/types.js";
@@ -163,6 +163,12 @@ async function main(): Promise<void> {
       }
       try {
         const config = loadConfig(configPath);
+        const { errors, warnings } = checkGovernance(config);
+        for (const w of warnings) process.stderr.write(`[kcp-harness] warning: ${w}\n`);
+        if (errors.length > 0) {
+          for (const e of errors) process.stderr.write(`[kcp-harness] config error: ${e}\n`);
+          process.exit(1);
+        }
         process.stdout.write(JSON.stringify(config, null, 2) + "\n");
         process.stderr.write(`[kcp-harness] config valid: ${config.governance.domains.length} domain(s), ${config.downstream.length} downstream(s)\n`);
       } catch (e) {

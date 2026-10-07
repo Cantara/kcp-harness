@@ -54,7 +54,9 @@ import {
   parseGrantSetting,
   resolveGrant,
   type ApprovalProvider,
-  type GrantDenyReason,
+  type GrantDenied,
+  type UnboundGrant,
+  type IgnoredReport,
   type ApprovalResolution,
 } from "./approval.js";
 
@@ -64,6 +66,10 @@ export interface ApprovalContext {
   rules: ApprovalRule[];
   /** Hard maximum validity of any approval (duration like "24h"; default 24h). */
   grantMax?: string;
+  /** Refuse grants from tickets not bound to the call's arguments (see approvals.require_args_binding). */
+  requireArgsBinding?: boolean;
+  /** Tolerated reviewedAt skew for statuses without a store stamp, in ms (default 5 min). */
+  maxSkewMs?: number;
 }
 
 /**
@@ -115,7 +121,15 @@ export interface GovernanceDecision {
    * (expired, wrong_session, used, args_mismatch, invalid). The proxy audits it as a
    * `grant_denied` event; the call itself then re-opens a new ticket (mode "pending").
    */
-  grantDenied?: { reason: GrantDenyReason; ticketId?: string };
+  grantDenied?: GrantDenied;
+  /**
+   * Set when the approval that allowed this call came from a ticket NOT bound to the call's
+   * arguments (explicit `argsBound: false`, or a legacy ticket with no digest). The proxy audits
+   * it as a `grant_unbound` event.
+   */
+  grantUnbound?: UnboundGrant;
+  /** Store records read for the deciding ticket but not honoured (the proxy audits them once per ticket). */
+  ignoredRecords?: IgnoredReport;
   /**
    * The deny-hit that decided this call, when an `action_scope.deny` held it
    * (RFC-0030 / KCP 0.32, §4.3b): the denied token, dimension, and binding
@@ -180,6 +194,8 @@ export async function govern(
           approvals.provider,
           args,
           approvals.grantMax,
+          approvals.requireArgsBinding,
+          approvals.maxSkewMs,
           // Same reduction the audit path uses, from the same args — one source of truth
           // for what this call's correlation is.
           traceparentFromArgs(args) ? deriveCorrelation(args).correlationId : undefined,
@@ -313,6 +329,8 @@ async function governByApproval(
   provider: ApprovalProvider,
   args: Record<string, unknown>,
   grantMax: string | undefined,
+  requireArgsBinding: boolean | undefined,
+  maxSkewMs: number | undefined,
   correlationId?: string,
   callCorrelationId?: string,
 ): Promise<GovernanceDecision> {
@@ -323,6 +341,8 @@ async function governByApproval(
     sessionId: session.id,
     argsDigest: digest,
     maxMs: grantMaxMs(grantMax),
+    ...(requireArgsBinding ? { requireArgsBinding } : {}),
+    ...(maxSkewMs !== undefined ? { maxSkewMs } : {}),
     ...(callCorrelationId ?? correlationId ? { correlationId: (callCorrelationId ?? correlationId) as string } : {}),
   });
 
@@ -345,6 +365,8 @@ async function governByApproval(
       reason:
         `approved by ${res.reviewer} at ${res.reviewedAt} ` +
         `(${res.policyRef}) — ticket ${status.request.id}, grant ${status.request.grant?.mode ?? "session"}`,
+      ...(outcome.unbound ? { grantUnbound: outcome.unbound } : {}),
+      ...(outcome.ignored ? { ignoredRecords: outcome.ignored } : {}),
     };
   }
 
@@ -354,9 +376,12 @@ async function governByApproval(
       approved: false,
       mode: "pending",
       pendingId: existing.request.id,
+      ...(outcome.denied ? { grantDenied: outcome.denied } : {}),
+      ...(outcome.ignored ? { ignoredRecords: outcome.ignored } : {}),
       reason:
         `pending approval ${existing.request.id} from role ${existing.request.requiredRole} — ` +
-        `re-try after approval or check harness_approvals`,
+        `re-try after approval or check harness_approvals` +
+        (outcome.denied ? " (a resolution record for this ticket was ignored as invalid)" : ""),
     };
   }
 
@@ -368,6 +393,7 @@ async function governByApproval(
       reason:
         `dismissed by ${existing.resolution!.reviewer}` +
         `${existing.resolution!.note ? `: ${existing.resolution!.note}` : ""} — ticket ${existing.request.id}`,
+      ...(outcome.ignored ? { ignoredRecords: outcome.ignored } : {}),
     };
   }
 
@@ -403,6 +429,7 @@ async function governByApproval(
     pendingId: request.id,
     submitted: true,
     ...(denied ? { grantDenied: denied } : {}),
+    ...(outcome.ignored ? { ignoredRecords: outcome.ignored } : {}),
     reason:
       `${denied ? `approval ${denied.ticketId ?? ""} no longer covers this call (${denied.reason}); `.replace("  ", " ") : ""}` +
       `pending approval ${request.id} from role ${rule.required_role}` +

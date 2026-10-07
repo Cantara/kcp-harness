@@ -1,7 +1,7 @@
 // Approval grants — an approval is the scope of ONE human decision, never a standing permission.
 // once / session / duration, capped by grant_max; bound to session, tool, target and arguments.
 
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { mkdtempSync, mkdirSync, appendFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -24,6 +24,12 @@ import { runApprovals } from "../src/approvals-cli.js";
 const policy: GovernancePolicy = { fail_closed: true, audit_all: true, max_units: 5, strict: false };
 const TARGET = "records/customer-7.md";
 const H = 3600_000;
+
+// A grant's window is measured from the store's own clock, so "approved 25h ago" is simulated by
+// approving now and moving the clock forward, not by back-dating the reviewer-supplied stamp.
+beforeEach(() => { vi.useFakeTimers({ toFake: ["Date"] }); vi.setSystemTime(Date.parse("2026-10-07T10:00:00.000Z")); });
+afterEach(() => { vi.useRealTimers(); });
+const ageBy = (ms: number) => { if (ms) vi.setSystemTime(Date.now() + ms); };
 
 function rule(grant?: string): ApprovalRule {
   return {
@@ -51,22 +57,27 @@ const ARGS = { file_path: TARGET, content: "x" };
 const call = (c: ApprovalContext, s: SessionState, args: Record<string, unknown> = ARGS, corr?: string) =>
   govern(cls(), "Write", args, s, policy, c, undefined, corr);
 
-/** Open a ticket through the governor, then approve it `agoMs` in the past. */
+/** Open a ticket through the governor, approve it, then let `agoMs` pass. */
 async function approveOpened(c: ApprovalContext, s: SessionState, agoMs = 0) {
   const d = await call(c, s);
   expect(d.mode).toBe("pending");
   await c.provider.resolve({
     id: d.pendingId!, state: "approved", reviewer: "Kari N.",
-    reviewedAt: new Date(Date.now() - agoMs).toISOString(), policyRef: "POL-7.2",
+    reviewedAt: new Date().toISOString(), policyRef: "POL-7.2",
   });
+  ageBy(agoMs);
   return d.pendingId!;
 }
 
 /** Seed a legacy ticket (no grant / argsDigest metadata), as written before this change. */
 async function seedLegacy(p: ApprovalProvider, sessionId: string, agoMs: number, state: "approved" | "dismissed" = "approved") {
   const req = newRequest({ sessionId, toolName: "Write", target: TARGET, task: "t", requiredRole: "account-owner", evidence: {} });
+  // A ticket written before binding was explicit carries neither a digest nor the flag.
+  delete (req as { argsBound?: false }).argsBound;
+  delete (req as { argsUnboundReason?: string }).argsUnboundReason;
   await p.submit(req);
-  await p.resolve({ id: req.id, state, reviewer: "Kari N.", reviewedAt: new Date(Date.now() - agoMs).toISOString(), policyRef: "POL-7.2" });
+  await p.resolve({ id: req.id, state, reviewer: "Kari N.", reviewedAt: new Date().toISOString(), policyRef: "POL-7.2" });
+  ageBy(agoMs);
   return req;
 }
 

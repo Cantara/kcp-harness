@@ -32,7 +32,10 @@ Validate the harness configuration and print the parsed config as JSON.
 kcp-harness check [--config harness.yaml]
 ```
 
-Exits with code 0 if valid, 1 if invalid.
+Exits with code 0 if valid, 1 if invalid. A config that parses but would govern nothing is
+invalid: approval rules with no governed domain, or domains that name no path, url, tool or skill
+(`kcp-harness serve` refuses the same configs). Warnings (no domains at all; no approval rule
+overlaps a domain path) are printed to stderr and do not change the exit code.
 
 ## `kcp-harness integrate`
 

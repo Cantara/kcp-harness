@@ -221,8 +221,14 @@ opened the ticket, the exact tool and target, and the call's arguments digest �
 Each rule sets `grant: once | session | <duration>` (default `session`), always capped by
 `governance.approvals.grant_max` (default `24h`). A call outside a valid grant is denied, audited
 as `grant_denied` (`expired`, `wrong_session`, `used`, ...) and opens a *new* ticket. A standing
-permission is a policy rule, not a click. See
-[Governance Model](docs/guide/governance.md#approval-grants).
+permission is a policy rule, not a click. A grant's window is measured from the **store's own
+clock**, not the reviewer-supplied `reviewedAt`; the first valid resolution of a ticket wins (a
+dismissed ticket cannot be re-approved by an appended line); with
+`approvals.require_signed_resolutions` signatures are verified on every read, not only in
+`resolve()`; and `approvals.require_args_binding` refuses grants from tickets not bound to the
+call's arguments. What the ticket store does *not* protect — write access to its directory — is
+stated in the [Ticket store trust model](docs/guide/governance.md#ticket-store-trust-model).
+See [Governance Model](docs/guide/governance.md#approval-grants).
 
 ### Confidence verdicts
 
@@ -264,6 +270,8 @@ governance:
         policy_ref: POL-7.2
         grant: session           # once | session | 15m / 4h / 1d  (default: session)
     grant_max: 24h               # hard cap on any approval's validity (default 24h)
+    # require_signed_resolutions: true  # + trusted_keys: verify signatures on every read (recommended)
+    require_args_binding: true   # refuse grants not bound to the call's arguments (recommended)
 
 audit:
   path: ".kcp-harness/audit.jsonl"

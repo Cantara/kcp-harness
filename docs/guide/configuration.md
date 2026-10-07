@@ -40,8 +40,11 @@ governance:
     provider: file             # Ticket store: file (persisted) or memory
     dir: .kcp-harness/approvals
     grant_max: 24h             # Hard cap on any approval's validity (default 24h)
-    require_signed_resolutions: false  # true: an unsigned/invalid --private-key resolution
-                                        # fails closed — see api/cli.md `approvals approve`
+    require_signed_resolutions: false  # true: an unsigned/invalid resolution fails closed, at
+                                        # resolve() AND when the store is read (recommended)
+    require_args_binding: false # true: a ticket not bound to the call's arguments is never a
+                                 # grant (recommended; default false for pre-upgrade tickets)
+    max_reviewed_at_skew: 5m   # How far ahead of the store's clock a reviewedAt may be (default 5m)
     trusted_keys:               # Optional. Reviewer public keys (paths or inline PEM/base64/
       - ./keys/kari.pub          # hex). When set, a signature must verify against one of these
                                   # to bind it to a named identity; when omitted, the signature's
@@ -110,10 +113,28 @@ for the state machine and invariants.
 | `rules[].expires_after` | duration | Ticket TTL (`30m`, `72h`, `7d`); expired = fail-closed |
 | `rules[].policy_ref` | string | Policy citation carried as ticket evidence |
 | `rules[].grant` | `once` \| `session` \| duration | What an approval authorises: the first matching call (`once`), the opening session (`session`, default), or a duration (`15m`, `4h`, `1d`, same session). Always capped by `grant_max`. A typo is a config error |
-| `grant_max` | duration | Hard maximum validity of any approval, from the moment of approval (default `24h`) |
+| `grant_max` | duration | Hard maximum validity of any approval, measured from the moment the **store** recorded it, not from the reviewer-supplied `reviewedAt` (default `24h`) |
+| `require_signed_resolutions` | bool | Require a valid ed25519 signature on every resolution (default `false`). Enforced in `resolve()` **and on every read of the store**: an unsigned or unverifiable resolution line is ignored, the ticket stays pending, and the call is denied (`grant_denied` / `invalid`). Recommended `true`, with `trusted_keys` |
+| `trusted_keys` | string[] | Reviewer public keys (paths or inline PEM/base64/hex) a signature must verify against. Without them the signature's own embedded key is used (integrity, not identity) |
+| `require_args_binding` | bool | Never honour a grant from a ticket that carries no `argsDigest` (default `false`, for tickets written before binding was explicit; **recommended `true`**). Exempt: the `harness_assess` ticket, which has no call arguments. See [Argument binding](/guide/governance#argument-binding) |
+| `max_reviewed_at_skew` | duration | How far ahead of the store's clock a resolution's `reviewedAt` may be before `resolve()` refuses it and a read ignores it (default `5m`) |
 
 An approval is a bounded grant, never a standing permission — see
-[Approval grants](/guide/governance#approval-grants).
+[Approval grants](/guide/governance#approval-grants). What the ticket store does and does not
+protect is stated in [Ticket store trust model](/guide/governance#ticket-store-trust-model).
+
+### A config must govern something
+
+`kcp-harness check` and `kcp-harness serve` **fail** (exit 1) when:
+
+- `governance.approvals.rules` exist but `governance.domains` is empty, or
+- `governance.domains` has entries but none names a `paths`, `urls`, `tools` or `skills` entry.
+
+Both leave every call outside governance, and an ungoverned call is passed through, so a mangled
+file would otherwise be silently open. `check` warns (and still exits 0) when no domain is
+configured at all, or when approvals are configured but no rule's `match.paths` overlaps any
+domain path (no ticket could ever open). A config whose root, `governance`, or `governance.domains`
+has the wrong YAML type (a list, a scalar) is a parse error rather than an empty configuration.
 
 Approval requirements are **org policy, not knowledge provenance** — they live here in
 `harness.yaml`, never in the (signed) `knowledge.yaml`.

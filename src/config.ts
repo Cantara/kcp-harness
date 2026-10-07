@@ -6,6 +6,7 @@
 
 import { readFileSync } from "node:fs";
 import yaml from "js-yaml";
+import { matchesPrefix } from "./classifier.js";
 
 /** A knowledge domain governed by a KCP manifest. */
 export interface GovernedDomain {
@@ -91,6 +92,19 @@ export interface ApprovalsConfig {
    * invalid — an unsigned resolution is not a valid resolution.
    */
   require_signed_resolutions?: boolean;
+  /**
+   * Refuse a grant from a ticket that is not bound to the call's arguments (default: false, for
+   * compatibility with tickets written before binding was explicit; RECOMMENDED true). With it on,
+   * a ticket with no `argsDigest` is never a grant, except one opened for a call that has no
+   * arguments (`harness_assess`). New tickets always carry a digest unless they are one of those.
+   */
+  require_args_binding?: boolean;
+  /**
+   * How far ahead of the store's clock a reviewer-supplied `reviewedAt` may be before the
+   * resolution is refused (and, if found in the store, ignored). Default `5m`. A grant's window
+   * is measured from the store's own stamp, never from `reviewedAt`.
+   */
+  max_reviewed_at_skew?: string;
   /**
    * Trusted reviewer public keys (paths or inline PEM/base64/hex). When set, a
    * signature must verify against one of these to bind it to an identity; when
@@ -217,9 +231,15 @@ export function loadConfig(path: string): HarnessConfig {
 /** Parse a harness configuration from YAML text. */
 export function parseConfig(text: string): HarnessConfig {
   const raw = yaml.load(text) as Record<string, unknown>;
-  if (!raw || typeof raw !== "object") throw new Error("harness config must be a YAML object");
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new Error("harness config must be a YAML mapping (key: value), not a list or scalar");
+  }
 
-  const governance = raw["governance"] as Record<string, unknown> | undefined;
+  const rawGovernance = raw["governance"];
+  if (rawGovernance !== undefined && rawGovernance !== null && (typeof rawGovernance !== "object" || Array.isArray(rawGovernance))) {
+    throw new Error("governance must be a mapping — a mistyped governance block would govern nothing");
+  }
+  const governance = (rawGovernance ?? undefined) as Record<string, unknown> | undefined;
   const domains = parseDomains(governance?.["domains"]);
   const policy = parsePolicy(governance?.["policy"]);
   const approvals = parseApprovals(governance?.["approvals"]);
@@ -260,6 +280,8 @@ function parseApprovals(raw: unknown): ApprovalsConfig | undefined {
     rules,
     grant_max: a["grant_max"] === undefined ? undefined : parseGrantMax(a["grant_max"]),
     require_signed_resolutions: a["require_signed_resolutions"] === true,
+    require_args_binding: a["require_args_binding"] === true,
+    max_reviewed_at_skew: a["max_reviewed_at_skew"] === undefined ? undefined : parseSkew(a["max_reviewed_at_skew"]),
     trusted_keys: Array.isArray(a["trusted_keys"]) ? a["trusted_keys"].map(String) : undefined,
   };
 }
@@ -297,6 +319,12 @@ function parseGrantMax(raw: unknown): string {
   throw new Error(`invalid approvals.grant_max "${g}" — expected a duration like 4h, 1d`);
 }
 
+function parseSkew(raw: unknown): string {
+  const g = String(raw).trim();
+  if (DURATION_RE.test(g) && Number.parseInt(g, 10) >= 0) return g;
+  throw new Error(`invalid approvals.max_reviewed_at_skew "${g}" — expected a duration like 5m, 1h`);
+}
+
 function parseConfidence(raw: unknown): ConfidenceConfig | undefined {
   if (!raw || typeof raw !== "object") return undefined;
   const c = raw as Record<string, unknown>;
@@ -324,7 +352,10 @@ function parseConformance(raw: unknown): ConformanceConfig | undefined {
 }
 
 function parseDomains(raw: unknown): GovernedDomain[] {
-  if (!Array.isArray(raw)) return [];
+  if (raw === undefined || raw === null) return [];
+  if (!Array.isArray(raw)) {
+    throw new Error("governance.domains must be a list of domain entries — a mistyped value would govern nothing");
+  }
   return raw.map((d: Record<string, unknown>) => ({
     manifest: String(d["manifest"] ?? ""),
     paths: Array.isArray(d["paths"]) ? d["paths"].map(String) : undefined,
@@ -377,4 +408,76 @@ function parseAudit(raw: unknown): AuditConfig {
   return {
     path: String(a["path"] ?? DEFAULT_AUDIT.path),
   };
+}
+
+// -- Does this config actually govern anything? --------------------------------
+
+/** Findings of {@link checkGovernance}. */
+export interface GovernanceCheck {
+  /** Conditions under which the harness would silently govern nothing — refused by check and serve. */
+  errors: string[];
+  /** Suspicious but not refused. */
+  warnings: string[];
+}
+
+/**
+ * A config that parses can still govern nothing: no domain, or domains that name no path / url /
+ * tool / skill, leave every call outside governance, and "ungoverned" is a pass-through. That is
+ * silently open, so it is checked explicitly (the classifier is not the place to notice it).
+ *
+ *  - ERROR: approval rules exist but no domain exists (the rules can never match anything);
+ *  - ERROR: domains exist but none names a path, url, tool or skill;
+ *  - WARN: no domain at all and no rules (nothing is governed);
+ *  - WARN: approval rules exist but none of them can match a call in any domain path.
+ */
+export function checkGovernance(config: HarnessConfig): GovernanceCheck {
+  const errors: string[] = [];
+  const warnings: string[] = [];
+  const { domains, approvals } = config.governance;
+  const rules = approvals?.rules ?? [];
+
+  if (domains.length === 0) {
+    if (rules.length > 0) {
+      errors.push(
+        `governance.approvals.rules has ${rules.length} rule(s) but governance.domains is empty — ` +
+          `no call is ever classified as governed, so no rule can ever fire`,
+      );
+    } else {
+      warnings.push("governance.domains is empty — nothing is governed; every tool call passes through");
+    }
+    return { errors, warnings };
+  }
+
+  const covers = (d: GovernedDomain) =>
+    (d.paths?.length ?? 0) + (d.urls?.length ?? 0) + (d.tools?.length ?? 0) + (d.skills?.length ?? 0) > 0;
+  if (!domains.some(covers)) {
+    errors.push(
+      `governance.domains has ${domains.length} entr${domains.length === 1 ? "y" : "ies"} but none names a ` +
+        `path, url, tool or skill — they cover nothing, so every call passes through ungoverned`,
+    );
+    return { errors, warnings };
+  }
+
+  if (rules.length > 0) {
+    const domainPaths = domains.flatMap((d) => [...(d.paths ?? []), ...(d.urls ?? [])]);
+    const reachable = rules.some((r) => {
+      const byPath = r.match.paths;
+      if (!byPath) return true; // matches any governed target
+      return byPath.some((rp) => domainPaths.some((dp) => matchesPrefix(rp, dp) || matchesPrefix(dp, rp)));
+    });
+    if (!reachable) {
+      warnings.push(
+        "governance.approvals is configured but no rule's match.paths overlaps any governed domain path — " +
+          "no approval ticket will ever be opened",
+      );
+    }
+  }
+  return { errors, warnings };
+}
+
+/** Throw when the config would silently govern nothing; returns warnings for the caller to print. */
+export function assertGovernableConfig(config: HarnessConfig): string[] {
+  const { errors, warnings } = checkGovernance(config);
+  if (errors.length > 0) throw new Error(errors.join("; "));
+  return warnings;
 }
