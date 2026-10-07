@@ -36,6 +36,7 @@ export type AuditEventType =
   | "plan_invalidated"   // Temporal watch: plan invalidated due to drift
   | "approval_requested" // Human approval: ticket opened
   | "approval_resolved"  // Human approval: named reviewer approved/dismissed
+  | "grant_denied"       // Human approval: an approval existed but did not cover this call (expired / wrong_session / used / ...)
   | "confidence_verdict" // Confidence gate: harness_assess adjudicated an answer
   | "skill_loaded"       // Skill/procedure gate: a governed skill passed skill_eligibility
   | "skill_skipped"      // Skill/procedure gate: a governed skill failed skill_eligibility (fail-closed)
@@ -118,6 +119,14 @@ export interface AuditEvent {
     signed?: boolean;
     /** Key identifier of the resolution signature, when present. */
     keyId?: string;
+  };
+  /** Why an existing approval did not cover this call (for grant_denied events). */
+  grant?: {
+    reason: string;
+    /** The approval ticket that was refused (absent when none could be identified). */
+    ticketId?: string;
+    toolName?: string;
+    target?: string;
   };
   /** Confidence verdict summary (for confidence_verdict events; no answer text). */
   confidence?: {
@@ -491,6 +500,32 @@ export function buildApprovalEvent(
       ...(status.resolution?.signature
         ? { signed: true, ...(status.resolution.signature.keyId ? { keyId: status.resolution.signature.keyId } : {}) }
         : {}),
+    },
+  };
+}
+
+/** Build a grant_denied event: an approval existed, but it did not cover this call. */
+export function buildGrantDeniedEvent(
+  sessionId: string,
+  sequence: number,
+  denied: { reason: string; ticketId?: string },
+  toolName: string,
+  target: string,
+  correlationId?: string,
+): AuditEvent {
+  return {
+    timestamp: new Date().toISOString(),
+    sessionId,
+    sequence,
+    ...(correlationId ? { correlationId } : {}),
+    type: "grant_denied",
+    outcome: "blocked",
+    durationMs: 0,
+    grant: {
+      reason: denied.reason,
+      ...(denied.ticketId ? { ticketId: denied.ticketId } : {}),
+      toolName,
+      target,
     },
   };
 }

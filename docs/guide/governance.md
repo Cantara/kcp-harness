@@ -73,7 +73,8 @@ Some governed actions must not be decided by the automated cascade alone: org po
 `governance.approvals` rule enter a durable ticket state machine:
 
 ```
-pending_review ──▶ approved   (terminal, named reviewer)
+pending_review ──▶ approved   (named reviewer — a bounded grant, see below)
+       │               └──▶ used      (terminal, a `once` grant consumed by a call)
        │─────────▶ dismissed  (terminal, named reviewer)
        └─────────▶ expired    (terminal, TTL — fail-closed)
 ```
@@ -91,7 +92,60 @@ Three invariants:
 MCP has no async answer, so a pending call is denied with a structured reason carrying the
 ticket id and required role. The agent re-tries after approval (or checks
 [`harness_approvals`](/api/mcp-tools#harness-approvals)). On retry the governor honors the
-resolution: approved → allowed with the resolution attached; dismissed → terminal block.
+resolution: approved *and the grant still covers the call* → allowed with the resolution
+attached; dismissed → terminal block.
+
+### Approval grants
+
+An approval is the scope of **one human decision**, never a standing permission — a standing
+permission is a policy rule, not a click. An approved ticket is a *grant*, bound to:
+
+- the **session** that opened the ticket (`request.sessionId`),
+- the exact **tool and target**,
+- the **arguments digest** of the intercepted call (SHA-256 of the canonical JSON of the
+  arguments, excluding `traceparent` and `_meta`). Limit: the digest covers the arguments as the
+  proxy received them; a retry with different arguments is a different decision and opens a new
+  ticket. Paths that have no call arguments (the `harness_assess` override) bind to the task text
+  only.
+
+and it lapses, as set by the rule's `grant`:
+
+| `grant` | Valid for |
+|---|---|
+| `once` | The first matching call. The ticket then moves to the terminal state `used`, recorded in the store with the correlation id of the call that used it. Consumption is atomic: of N concurrent calls exactly one succeeds. |
+| `session` (default) | Calls from the opening session, until `grant_max`. |
+| `15m` / `4h` / `1d` | That long after the reviewer approved, same session, capped by `grant_max`. |
+
+`governance.approvals.grant_max` (default `24h`) is a hard ceiling on every grant, measured from
+the moment of approval — including `once` grants that are never used. An approval is never
+permanent.
+
+A call outside a valid grant is **not** approved. It opens a new `pending_review` ticket and the
+audit log records a `grant_denied` event with the reason: `expired`, `wrong_session`, `used`,
+`args_mismatch` or `invalid`. `kcp-harness approvals list` shows used tickets (`used`), the
+opening session of every ticket, and flags approved tickets whose grant lapsed
+(`[grant expired]`).
+
+Only tickets for the **same session, tool, target** (and arguments) are considered, and the
+newest decides: an older approval never outlives a newer dismissal or a newer pending ticket.
+
+**Fail-closed.** If a grant cannot be evaluated — unreadable store, corrupt ticket (unparseable
+`reviewedAt`, unknown grant mode), missing session id, or a custom provider that implements no
+`consume()` for a `once` grant — the call is not approved (`invalid`).
+
+**Migration.** Tickets approved before grants existed carry no grant metadata. They are treated
+as `session`-scoped by their `request.sessionId` and expire at `resolvedAt + grant_max`. They have
+no arguments digest, so they stay unbound by arguments — a documented limit of migrated tickets.
+Previously such an approval was permanent and cross-session; after upgrading, an old approval no
+longer authorises a new session or anything older than `grant_max`. Re-approval is the intended
+path.
+
+### Scope of the pass-through
+
+A tool call the classifier does not place under a governed domain is passed through
+(`kcp-passthrough`, "ungoverned tool call"). That is the intended boundary: the harness governs
+the domains an operator declares, not every tool the agent holds. Approval rules apply only
+inside governed domains.
 
 The provider interface (`submit` / `check` / `resolve` / `list`) is channel-agnostic — Slack,
 email, or ticketing integrations are org-side implementations of the same surface the built-in
