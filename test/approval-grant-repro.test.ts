@@ -1,12 +1,15 @@
 // Reproduction of the standing-grant flaw: one reviewer click used to be a permanent grant for a
 // (tool, target) pair across every session, forever. These tests use only the pre-fix API.
 
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { govern, type ApprovalContext } from "../src/governor.js";
 import type { Classification } from "../src/classifier.js";
 import { createSession } from "../src/session.js";
 import type { GovernancePolicy, ApprovalRule } from "../src/config.js";
 import { InMemoryApprovalProvider, newRequest } from "../src/approval.js";
+
+beforeEach(() => { vi.useFakeTimers({ toFake: ["Date"] }); vi.setSystemTime(Date.parse("2026-10-07T10:00:00.000Z")); });
+afterEach(() => { vi.useRealTimers(); });
 
 const policy: GovernancePolicy = { fail_closed: true, audit_all: true, max_units: 5, strict: false };
 const RULE: ApprovalRule = {
@@ -49,7 +52,8 @@ describe("reproduction: an approval must not be a standing grant", () => {
     const provider = new InMemoryApprovalProvider();
     const ctx: ApprovalContext = { provider, rules: [RULE] };
     const session = createSession();
-    await approvedTicket(provider, session.id, new Date(Date.now() - 3 * 24 * 3600_000).toISOString());
+    await approvedTicket(provider, session.id, new Date().toISOString());
+    vi.setSystemTime(Date.now() + 3 * 24 * 3600_000); // three days pass
 
     const decision = await govern(cls(), "Write", {}, session, policy, ctx);
     expect(decision.approved).toBe(false);

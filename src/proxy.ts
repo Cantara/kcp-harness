@@ -15,12 +15,12 @@
 import { createInterface } from "node:readline";
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
-import type { HarnessConfig } from "./config.js";
+import { assertGovernableConfig, type HarnessConfig } from "./config.js";
 import { classify, extractTargets, type Classification } from "./classifier.js";
 import { govern, assessSkillEligibility, type GovernanceDecision, type ApprovalContext } from "./governor.js";
 import { checkConformance, type ObservedAction, type PlaybookContext } from "./conformance.js";
 import { deriveCorrelation } from "./correlation.js";
-import { providerFromConfig, resolveGrant, grantMaxMs, argsDigest, newRequest, parseDuration, type ApprovalProvider } from "./approval.js";
+import { providerFromConfig, resolveGrant, grantMaxMs, argsBindingOf, argsDigest, newRequest, parseDuration, DEFAULT_REVIEW_SKEW, type ApprovalProvider, type GrantOutcome } from "./approval.js";
 import { assess } from "kcp-agent";
 import { signPurchaseReceipt, type PurchaseReceiptPayload } from "./purchase-receipt.js";
 import {
@@ -32,6 +32,8 @@ import {
   buildDriftEvent,
   buildApprovalEvent,
   buildGrantDeniedEvent,
+  buildGrantUnboundEvent,
+  buildRecordIgnoredEvent,
   buildConfidenceEvent,
   buildConformanceEvent,
   buildSkillEvent,
@@ -173,6 +175,8 @@ export class HarnessProxy {
         provider: providerFromConfig(approvalsConfig),
         rules: approvalsConfig.rules,
         grantMax: approvalsConfig.grant_max,
+        ...(approvalsConfig.require_args_binding ? { requireArgsBinding: true } : {}),
+        maxSkewMs: parseDuration(approvalsConfig.max_reviewed_at_skew ?? DEFAULT_REVIEW_SKEW),
       };
     }
 
@@ -182,6 +186,50 @@ export class HarnessProxy {
       ? { amount: policy.budget.amount, currency: policy.budget.currency ?? "USDC" }
       : undefined;
     this.session = createSession(ceiling);
+  }
+
+  /** Tickets whose ignored records were already audited by this process (once per ticket). */
+  private readonly reportedIgnored = new Set<string>();
+
+  /**
+   * Audit what the approval store told us about a ticket besides the decision: an approval that
+   * did not cover the call (`grant_denied`, incl. reason `invalid` for an ignored resolution), a
+   * grant honoured from an unbound ticket (`grant_unbound`), and records read but not honoured
+   * (`approval_record_ignored`, once per ticket per process).
+   */
+  private auditApprovalSignals(
+    signals: {
+      denied?: { reason: string; ticketId?: string; detail?: string };
+      unbound?: { ticketId: string; binding: string; reason?: string };
+      ignored?: { ticketId: string; records: Array<{ reason: string; state?: string; reviewer?: string; reviewedAt?: string }> };
+    } | GrantOutcome,
+    toolName: string,
+    target: string,
+    correlationId?: string,
+  ): void {
+    // No session to bind a grant to: nothing to audit beyond the hold itself.
+    if ((signals as { kind?: string }).kind === "invalid") return;
+    const sig = signals as {
+      denied?: { reason: string; ticketId?: string; detail?: string };
+      unbound?: { ticketId: string; binding: string; reason?: string };
+      ignored?: { ticketId: string; records: Array<{ reason: string; state?: string; reviewer?: string; reviewedAt?: string }> };
+    };
+    if (sig.denied) {
+      this.audit.emit(
+        buildGrantDeniedEvent(this.session.id, nextSequence(this.session), sig.denied, toolName, target, correlationId),
+      );
+    }
+    if (sig.unbound) {
+      this.audit.emit(
+        buildGrantUnboundEvent(this.session.id, nextSequence(this.session), sig.unbound, toolName, target, correlationId),
+      );
+    }
+    if (sig.ignored && !this.reportedIgnored.has(sig.ignored.ticketId)) {
+      this.reportedIgnored.add(sig.ignored.ticketId);
+      this.audit.emit(
+        buildRecordIgnoredEvent(this.session.id, nextSequence(this.session), sig.ignored, correlationId),
+      );
+    }
   }
 
   /** Start the proxy: spawn downstream servers and begin serving. */
@@ -372,19 +420,18 @@ export class HarnessProxy {
           correlationId,
         );
 
-        // An approval existed but did not cover this call — its own audit event, with the reason
-        if (governance.grantDenied) {
-          this.audit.emit(
-            buildGrantDeniedEvent(
-              this.session.id,
-              nextSequence(this.session),
-              governance.grantDenied,
-              toolName,
-              classification.target ?? "",
-              correlationId,
-            ),
-          );
-        }
+        // An approval existed but did not cover this call, a grant came from an unbound ticket,
+        // or the store held records it did not honour — each its own audit event.
+        this.auditApprovalSignals(
+          {
+            denied: governance.grantDenied,
+            unbound: governance.grantUnbound,
+            ignored: governance.ignoredRecords,
+          },
+          toolName,
+          classification.target ?? "",
+          correlationId,
+        );
 
         // A freshly opened ticket is its own audit event
         if (governance.submitted && governance.pendingId && this.approvals) {
@@ -708,6 +755,9 @@ export class HarnessProxy {
         const statuses = await this.approvals.provider.list(
           stateFilter ? { state: stateFilter as never } : undefined,
         );
+        for (const s of statuses) {
+          if (s.ignored?.length) this.auditApprovalSignals({ ignored: { ticketId: s.request.id, records: s.ignored } }, "harness_approvals", s.request.target);
+        }
         return {
           content: [{
             type: "text",
@@ -726,6 +776,11 @@ export class HarnessProxy {
                 note: s.resolution?.note,
                 sessionId: s.request.sessionId,
                 grant: s.request.grant?.mode ?? "session",
+                argsBinding: argsBindingOf(s.request),
+                ...(s.request.argsUnboundReason ? { argsUnboundReason: s.request.argsUnboundReason } : {}),
+                ...(s.trustedResolvedAt ? { trustedResolvedAt: s.trustedResolvedAt } : {}),
+                ...(s.legacyTime ? { legacyTime: true } : {}),
+                ...(s.ignored ? { ignored: s.ignored } : {}),
                 ...(s.use ? { usedAt: s.use.usedAt, usedByCorrelationId: s.use.correlationId } : {}),
               })),
             }, null, 2),
@@ -848,13 +903,11 @@ export class HarnessProxy {
         sessionId: this.session.id,
         argsDigest: argsDigest(args),
         maxMs: grantMaxMs(this.approvals.grantMax),
+        ...(this.approvals.requireArgsBinding ? { requireArgsBinding: true } : {}),
+        ...(this.approvals.maxSkewMs !== undefined ? { maxSkewMs: this.approvals.maxSkewMs } : {}),
         correlationId,
       });
-      if (grant.kind === "open" && grant.denied) {
-        this.audit.emit(
-          buildGrantDeniedEvent(this.session.id, nextSequence(this.session), grant.denied, toolName, target, correlationId),
-        );
-      }
+      this.auditApprovalSignals(grant, toolName, target, correlationId);
       if (grant.kind === "granted") {
         // A named human authorized this out-of-scope action — allow, within the grant's bounds.
         overridden = true;
@@ -1000,13 +1053,11 @@ export class HarnessProxy {
         toolName: "harness_assess",
         sessionId: this.session.id,
         maxMs: grantMaxMs(this.approvals.grantMax),
+        ...(this.approvals.requireArgsBinding ? { requireArgsBinding: true } : {}),
+        ...(this.approvals.maxSkewMs !== undefined ? { maxSkewMs: this.approvals.maxSkewMs } : {}),
         correlationId,
       });
-      if (grant.kind === "open" && grant.denied) {
-        this.audit.emit(
-          buildGrantDeniedEvent(this.session.id, nextSequence(this.session), grant.denied, "harness_assess", task, correlationId),
-        );
-      }
+      this.auditApprovalSignals(grant, "harness_assess", task, correlationId);
 
       if (grant.kind === "granted") {
         // The gate failed, but a named human has overridden it for this task — in this session,
@@ -1041,6 +1092,10 @@ export class HarnessProxy {
           toolName: "harness_assess",
           target: task,
           task,
+          // harness_assess has no call arguments to bind: the task text IS the target, and a
+          // grant covers exactly that (tool, target). Explicit, not silent.
+          argsBound: false,
+          argsUnboundReason: "no_call_arguments",
           requiredRole: routing.route_to_role!,
           expiresAt: routing.expires_after
             ? new Date(Date.now() + parseDuration(routing.expires_after)).toISOString()
@@ -1132,6 +1187,8 @@ function detectPurchase(
 
 /** Serve the harness proxy over stdio until stdin closes. */
 export async function serveProxy(config: HarnessConfig): Promise<void> {
+  // A config that parses but governs nothing is silently open: refuse to start on one.
+  for (const w of assertGovernableConfig(config)) process.stderr.write(`[kcp-harness] warning: ${w}\n`);
   const proxy = new HarnessProxy({ config });
   await proxy.start();
 

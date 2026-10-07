@@ -15,7 +15,7 @@
 
 import { readFileSync } from "node:fs";
 import type { HarnessConfig } from "./config.js";
-import { evaluateGrant, grantMaxMs, providerFromConfig, type ApprovalState, type ApprovalStatus } from "./approval.js";
+import { argsBindingOf, evaluateGrant, grantMaxMs, providerFromConfig, type ApprovalState, type ApprovalStatus, type IgnoredRecord } from "./approval.js";
 import { signResolution, type ResolutionSignature } from "./resolution-signature.js";
 import { buildApprovalEvent, type AuditWriter } from "./audit.js";
 
@@ -122,15 +122,39 @@ function formatStatus(s: ApprovalStatus, maxMs: number): string {
     s.state === "approved" && !evaluateGrant(s, { target: s.request.target, toolName: s.request.toolName, sessionId: s.request.sessionId, argsDigest: s.request.argsDigest, maxMs }).ok
       ? " [grant expired]"
       : "";
+  const binding = argsBindingOf(s.request);
+  const unbound =
+    binding === "legacy" ? " [legacy: args unbound]"
+    : binding === "unbound" ? ` [args unbound${s.request.argsUnboundReason ? `: ${s.request.argsUnboundReason}` : ""}]`
+    : "";
+  const legacyTime = s.legacyTime ? " [legacy time]" : "";
+  const ignored = formatIgnored(s.ignored);
   const grant = s.request.grant ? ` grant=${s.request.grant.mode}${s.request.grant.durationMs ? `:${s.request.grant.durationMs / 60_000}m` : ""}` : "";
   const used = s.use ? `\n  used at ${s.use.usedAt}${s.use.correlationId ? ` by correlation ${s.use.correlationId}` : ""} (session ${s.use.sessionId})` : "";
   const who = s.resolution
     ? `\n  ${s.resolution.state} by ${s.resolution.reviewer} at ${s.resolution.reviewedAt} (${s.resolution.policyRef})${signed}${s.resolution.note ? ` — ${s.resolution.note}` : ""}`
     : "";
-  return head + lapsed + when + ` session=${s.request.sessionId}` + grant + who + used;
+  return head + lapsed + ignored + unbound + legacyTime + when + ` session=${s.request.sessionId}` + grant + who + used;
 }
 
 function flag(argv: string[], name: string): string | undefined {
   const idx = argv.indexOf(name);
   return idx >= 0 && idx + 1 < argv.length ? argv[idx + 1] : undefined;
+}
+
+/** Human-readable flags for records the store read but did not honour. */
+function formatIgnored(ignored: IgnoredRecord[] | undefined): string {
+  if (!ignored?.length) return "";
+  const label: Record<IgnoredRecord["reason"], string> = {
+    unsigned: "unsigned: ignored",
+    bad_signature: "bad signature: ignored",
+    future_dated: "future-dated: ignored",
+    before_request: "dated before the request: ignored",
+    malformed: "malformed: ignored",
+    after_expiry: "record after expiry ignored",
+    extra_record: "extra record ignored",
+  };
+  const counts = new Map<string, number>();
+  for (const r of ignored) counts.set(label[r.reason], (counts.get(label[r.reason]) ?? 0) + 1);
+  return [...counts].map(([l, n]) => ` [${l}${n > 1 ? ` x${n}` : ""}]`).join("");
 }

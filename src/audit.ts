@@ -36,7 +36,9 @@ export type AuditEventType =
   | "plan_invalidated"   // Temporal watch: plan invalidated due to drift
   | "approval_requested" // Human approval: ticket opened
   | "approval_resolved"  // Human approval: named reviewer approved/dismissed
-  | "grant_denied"       // Human approval: an approval existed but did not cover this call (expired / wrong_session / used / ...)
+  | "grant_denied"       // Human approval: an approval existed but did not cover this call (expired / wrong_session / used / invalid ...)
+  | "grant_unbound"      // Human approval: a grant from a ticket NOT bound to the call's arguments was used
+  | "approval_record_ignored" // Human approval store: record(s) read but not honoured (extra after terminal, unsigned, future-dated ...) — once per ticket
   | "confidence_verdict" // Confidence gate: harness_assess adjudicated an answer
   | "skill_loaded"       // Skill/procedure gate: a governed skill passed skill_eligibility
   | "skill_skipped"      // Skill/procedure gate: a governed skill failed skill_eligibility (fail-closed)
@@ -123,8 +125,24 @@ export interface AuditEvent {
   /** Why an existing approval did not cover this call (for grant_denied events). */
   grant?: {
     reason: string;
+    /** Finer-grained cause, e.g. `args_unbound`, `resolution_ignored`, `future_dated`. */
+    detail?: string;
     /** The approval ticket that was refused (absent when none could be identified). */
     ticketId?: string;
+    toolName?: string;
+    target?: string;
+  };
+  /** Store records read but not honoured (for approval_record_ignored events). */
+  ignoredRecords?: {
+    ticketId: string;
+    records: Array<{ reason: string; state?: string; reviewer?: string; reviewedAt?: string }>;
+  };
+  /** A grant that was used from a ticket not bound to the call's arguments (for grant_unbound events). */
+  unboundGrant?: {
+    ticketId: string;
+    /** `unbound`: explicit argsBound:false. `legacy`: written before binding was explicit. */
+    binding: string;
+    reason?: string;
     toolName?: string;
     target?: string;
   };
@@ -508,7 +526,7 @@ export function buildApprovalEvent(
 export function buildGrantDeniedEvent(
   sessionId: string,
   sequence: number,
-  denied: { reason: string; ticketId?: string },
+  denied: { reason: string; ticketId?: string; detail?: string },
   toolName: string,
   target: string,
   correlationId?: string,
@@ -523,10 +541,51 @@ export function buildGrantDeniedEvent(
     durationMs: 0,
     grant: {
       reason: denied.reason,
+      ...(denied.detail ? { detail: denied.detail } : {}),
       ...(denied.ticketId ? { ticketId: denied.ticketId } : {}),
       toolName,
       target,
     },
+  };
+}
+
+/** Build a grant_unbound event: a grant was honoured from a ticket not bound to the call's arguments. */
+export function buildGrantUnboundEvent(
+  sessionId: string,
+  sequence: number,
+  unbound: { ticketId: string; binding: string; reason?: string },
+  toolName: string,
+  target: string,
+  correlationId?: string,
+): AuditEvent {
+  return {
+    timestamp: new Date().toISOString(),
+    sessionId,
+    sequence,
+    ...(correlationId ? { correlationId } : {}),
+    type: "grant_unbound",
+    outcome: "approved",
+    durationMs: 0,
+    unboundGrant: { ...unbound, toolName, target },
+  };
+}
+
+/** Build an approval_record_ignored event: the store held records it did not honour for a ticket. */
+export function buildRecordIgnoredEvent(
+  sessionId: string,
+  sequence: number,
+  report: { ticketId: string; records: Array<{ reason: string; state?: string; reviewer?: string; reviewedAt?: string }> },
+  correlationId?: string,
+): AuditEvent {
+  return {
+    timestamp: new Date().toISOString(),
+    sessionId,
+    sequence,
+    ...(correlationId ? { correlationId } : {}),
+    type: "approval_record_ignored",
+    outcome: "blocked",
+    durationMs: 0,
+    ignoredRecords: report,
   };
 }
 
